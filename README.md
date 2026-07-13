@@ -5,9 +5,9 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 ## What this repo does
 
 - Reads a GTF and builds snoRNA intervals from `gene_type` or `gene_biotype`.
-- Scans one directory of VCF or VCF.GZ shards.
-- Counts snoRNA-overlapping variant sites per participant.
-- Optionally joins a participant annotation TSV so case/control comparisons can happen downstream.
+- Uses `biallelic_shards.bed` to find the relevant shard/subshard VCFs for each snoRNA gene.
+- Writes one TSV per gene as soon as that gene finishes.
+- Produces end-of-run gene and participant summaries.
 
 ## Suggested layout on CloudOS
 
@@ -26,19 +26,21 @@ python scripts/count_snoRNA_multi_variant_carriers.py \
   --participant-tsv participants.tsv \
   --participant-id-col platekey \
   --group-col phenotype \
+  --cpus 16 \
   --out-prefix outputs/snorna_biallelic
 ```
 
 This writes:
 
-- `outputs/snorna_biallelic.variants.tsv`
+- `outputs/snorna_biallelic.genes/0001_*.tsv`
 - `outputs/snorna_biallelic.participants.tsv`
 - `outputs/snorna_biallelic.gene_summary.tsv`
 - `outputs/snorna_biallelic.summary.tsv`
 
 If your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
 
-The script prints progress as it loads genes, resolves overlapping shards, and finishes each gene before moving to the next one.
+The script prints progress as it loads genes, queues each gene, and reports each gene as it finishes.
+It will try a process pool first and automatically fall back to threads if the runtime blocks process-pool setup.
 
 ## Participant TSV
 
@@ -48,4 +50,4 @@ The participant table can contain any extra columns you want. The script only ne
 
 - The script is intentionally standard-library only.
 - It treats a participant as a carrier for a site if any genotype allele is non-reference.
-- Multi-allelic VCF rows are counted once per participant per site.
+- Multi-allelic VCF rows are counted once per gene and participant.
