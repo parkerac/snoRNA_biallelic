@@ -31,10 +31,14 @@ python scripts/count_snoRNA_multi_variant_carriers.py \
 
 This writes:
 
+- `outputs/snorna_biallelic.variants.tsv`
 - `outputs/snorna_biallelic.participants.tsv`
+- `outputs/snorna_biallelic.gene_summary.tsv`
 - `outputs/snorna_biallelic.summary.tsv`
 
 If your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
+
+The script prints progress as it loads genes, resolves overlapping shards, and finishes each gene before moving to the next one.
 
 ## Participant TSV
 

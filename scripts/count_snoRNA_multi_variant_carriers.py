@@ -13,7 +13,7 @@ def open_text(path):
 
 
 def parse_gtf(path, feature_types):
-    regions = defaultdict(list)
+    genes = []
     with open_text(path) as fh:
         for line in fh:
             if line.startswith("#"):
@@ -32,48 +32,60 @@ def parse_gtf(path, feature_types):
             gene_type = attr_map.get("gene_type") or attr_map.get("gene_biotype")
             if gene_type not in feature_types:
                 continue
-            regions[chrom].append((int(start), int(end), attr_map.get("gene_name", "UNKNOWN"), attr_map.get("gene_id", "UNKNOWN")))
-    for chrom in regions:
-        regions[chrom].sort()
-    return regions
+            genes.append(
+                {
+                    "chrom": chrom,
+                    "start": int(start),
+                    "end": int(end),
+                    "rna_class": gene_type,
+                    "gene_name": attr_map.get("gene_name", "UNKNOWN"),
+                    "gene_id": attr_map.get("gene_id", "UNKNOWN"),
+                }
+            )
+    return sorted(genes, key=lambda g: (g["chrom"], g["start"], g["end"], g["gene_name"], g["gene_id"]))
 
 
-def regions_to_bed(regions):
-    bed = []
-    for chrom, intervals in regions.items():
-        for start, end, gene_name, gene_id in intervals:
-            bed.append((chrom, start - 1, end, gene_name, gene_id))
-    bed.sort()
-    return bed
-
-
-def find_overlapping_shards(regions, shard_bed, vcf_root=None, vcf_template="shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz"):
-    hits = set()
-    for chrom, start, end, *_ in regions_to_bed(regions):
-        for row in shard_bed.get(chrom, []):
-            shard_start, shard_end, shard, subshard = row[:4]
-            if shard_end < start or shard_start > end:
+def parse_shard_bed(path):
+    shard_bed = defaultdict(list)
+    with open(path) as fh:
+        for line in fh:
+            if not line.strip() or line.startswith("#"):
                 continue
-            if vcf_root:
-                path = os.path.join(vcf_root, vcf_template.format(shard=shard, subshard=subshard))
-            else:
-                path = row[4]
-            hits.add(path)
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 8:
+                continue
+            chrom = parts[0]
+            start = int(parts[1]) + 1
+            end = int(parts[2])
+            shard = parts[4]
+            subshard = parts[5]
+            vcf_path = parts[6]
+            shard_bed[chrom].append((start, end, shard, subshard, vcf_path))
+    for chrom in shard_bed:
+        shard_bed[chrom].sort()
+    return shard_bed
+
+
+def gene_overlaps_shard(gene, shard):
+    return not (shard[1] < gene["start"] or shard[0] > gene["end"])
+
+
+def gene_overlaps_variant(gene, pos):
+    return gene["start"] <= pos <= gene["end"]
+
+
+def find_overlapping_vcfs_for_gene(gene, shard_bed, vcf_root=None, vcf_template="shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz"):
+    hits = set()
+    for shard in shard_bed.get(gene["chrom"], []):
+        if not gene_overlaps_shard(gene, shard):
+            continue
+        path = os.path.join(vcf_root, vcf_template.format(shard=shard[2], subshard=shard[3])) if vcf_root else shard[4]
+        hits.add(path)
     return sorted(hits)
 
 
 def is_carrier(gt):
     return any(allele not in {".", "0"} for allele in gt.replace("|", "/").split("/"))
-
-
-def overlaps(chrom, pos, regions):
-    hits = []
-    if chrom not in regions:
-        return hits
-    for start, end, gene_name, gene_id in regions[chrom]:
-        if start <= pos <= end:
-            hits.append((gene_name, gene_id))
-    return hits
 
 
 def read_participants(path, id_col, group_col):
@@ -93,8 +105,66 @@ def read_participants(path, id_col, group_col):
     return rows, groups
 
 
-def scan_vcfs(vcf_dir, regions):
+def scan_gene_vcfs(gene, vcf_paths):
     participants = defaultdict(lambda: {"variants": set(), "genes": set()})
+    site_rows = []
+    variant_count = 0
+    for path in vcf_paths:
+        with open_text(path) as fh:
+            samples = []
+            for line in fh:
+                if line.startswith("##"):
+                    continue
+                if line.startswith("#CHROM"):
+                    samples = line.rstrip("\n").split("\t")[9:]
+                    continue
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 10 or not samples:
+                    continue
+                if parts[0] != gene["chrom"]:
+                    continue
+                pos = int(parts[1])
+                if not gene_overlaps_variant(gene, pos):
+                    continue
+                ref, alts = parts[3], parts[4]
+                fmt = parts[8].split(":")
+                if "GT" not in fmt:
+                    continue
+                gt_idx = fmt.index("GT")
+                variant_id = f"{parts[0]}:{pos}:{ref}:{alts}"
+                variant_count += 1
+                for sample, sample_field in zip(samples, parts[9:]):
+                    fields = sample_field.split(":")
+                    if len(fields) <= gt_idx:
+                        continue
+                    gt = fields[gt_idx]
+                    if gt in {".", "./.", ".|."} or not is_carrier(gt):
+                        continue
+                    participants[sample]["variants"].add(variant_id)
+                    participants[sample]["genes"].add((gene["gene_name"], gene["gene_id"]))
+                    site_rows.append(
+                        {
+                            "gene_name": gene["gene_name"],
+                            "gene_id": gene["gene_id"],
+                            "rna_class": gene["rna_class"],
+                            "chrom": parts[0],
+                            "pos": pos,
+                            "ref": ref,
+                            "alt": alts,
+                            "variant_id": variant_id,
+                            "participant_id": sample,
+                        }
+                    )
+    return site_rows, participants, variant_count
+
+
+def scan_all_vcfs(vcf_dir, genes):
+    by_chrom = defaultdict(list)
+    for gene in genes:
+        by_chrom[gene["chrom"]].append(gene)
+    participants = defaultdict(lambda: {"variants": set(), "genes": set()})
+    site_rows = []
+    variant_count = 0
     for name in sorted(os.listdir(vcf_dir)):
         if not name.endswith((".vcf", ".vcf.gz")):
             continue
@@ -108,17 +178,19 @@ def scan_vcfs(vcf_dir, regions):
                     samples = line.rstrip("\n").split("\t")[9:]
                     continue
                 parts = line.rstrip("\n").split("\t")
-                if len(parts) < 10 or not samples:
+                if len(parts) < 10 or not samples or parts[0] not in by_chrom:
                     continue
-                chrom, pos, ref, alts = parts[0], int(parts[1]), parts[3], parts[4]
-                hits = overlaps(chrom, pos, regions)
+                pos = int(parts[1])
+                ref, alts = parts[3], parts[4]
+                hits = [gene for gene in by_chrom[parts[0]] if gene_overlaps_variant(gene, pos)]
                 if not hits:
                     continue
                 fmt = parts[8].split(":")
                 if "GT" not in fmt:
                     continue
                 gt_idx = fmt.index("GT")
-                variant_id = f"{chrom}:{pos}:{ref}:{alts}"
+                variant_id = f"{parts[0]}:{pos}:{ref}:{alts}"
+                variant_count += 1
                 for sample, sample_field in zip(samples, parts[9:]):
                     fields = sample_field.split(":")
                     if len(fields) <= gt_idx:
@@ -127,102 +199,55 @@ def scan_vcfs(vcf_dir, regions):
                     if gt in {".", "./.", ".|."} or not is_carrier(gt):
                         continue
                     participants[sample]["variants"].add(variant_id)
-                    for gene_name, gene_id in hits:
-                        participants[sample]["genes"].add((gene_name, gene_id))
-    return participants
+                    for gene in hits:
+                        participants[sample]["genes"].add((gene["gene_name"], gene["gene_id"]))
+                        site_rows.append(
+                            {
+                                "gene_name": gene["gene_name"],
+                                "gene_id": gene["gene_id"],
+                                "rna_class": gene["rna_class"],
+                                "chrom": parts[0],
+                                "pos": pos,
+                                "ref": ref,
+                                "alt": alts,
+                                "variant_id": variant_id,
+                                "participant_id": sample,
+                            }
+                        )
+    return site_rows, participants, variant_count
 
 
-def scan_vcf_paths(vcf_paths, regions):
-    participants = defaultdict(lambda: {"variants": set(), "genes": set()})
-    for path in vcf_paths:
-        with open_text(path) as fh:
-            samples = []
-            for line in fh:
-                if line.startswith("##"):
-                    continue
-                if line.startswith("#CHROM"):
-                    samples = line.rstrip("\n").split("\t")[9:]
-                    continue
-                parts = line.rstrip("\n").split("\t")
-                if len(parts) < 10 or not samples:
-                    continue
-                chrom, pos, ref, alts = parts[0], int(parts[1]), parts[3], parts[4]
-                hits = overlaps(chrom, pos, regions)
-                if not hits:
-                    continue
-                fmt = parts[8].split(":")
-                if "GT" not in fmt:
-                    continue
-                gt_idx = fmt.index("GT")
-                variant_id = f"{chrom}:{pos}:{ref}:{alts}"
-                for sample, sample_field in zip(samples, parts[9:]):
-                    fields = sample_field.split(":")
-                    if len(fields) <= gt_idx:
-                        continue
-                    gt = fields[gt_idx]
-                    if gt in {".", "./.", ".|."} or not is_carrier(gt):
-                        continue
-                    participants[sample]["variants"].add(variant_id)
-                    for gene_name, gene_id in hits:
-                        participants[sample]["genes"].add((gene_name, gene_id))
-    return participants
-
-
-def parse_shard_bed(path):
-    shard_bed = defaultdict(list)
-    with open(path) as fh:
-        for line in fh:
-            if not line.strip() or line.startswith("#"):
-                continue
-            parts = line.rstrip("\n").split("\t")
-            if len(parts) < 8:
-                continue
-            chrom = parts[0]
-            start = int(parts[1]) + 1
-            end = int(parts[2])
-            shard = parts[4]
-            subshard = parts[5]
-            vcf_path = parts[6]
-            shard_bed[chrom].append((start, end, shard, subshard, vcf_path))
-    return shard_bed
-
-
-def write_outputs(out_prefix, participants, participant_rows, group_col):
-    part_path = f"{out_prefix}.participants.tsv"
-    summary_path = f"{out_prefix}.summary.tsv"
-    with open(part_path, "w", newline="") as fh:
+def write_outputs(out_prefix, participants, participant_rows, group_col, gene_stats, gene_out_path=None):
+    if gene_out_path is None:
+        gene_out_path = f"{out_prefix}.gene_summary.tsv"
+    print(f"Writing gene summary to {gene_out_path}", flush=True)
+    with open(gene_out_path, "w", newline="") as fh:
         writer = csv.DictWriter(
             fh,
             delimiter="\t",
-            fieldnames=["participant_id", "group", "n_variants", "n_genes", "variants", "genes"],
+            fieldnames=["gene_name", "gene_id", "rna_class", "chrom", "start", "end", "n_vcfs", "n_variants", "n_participants"],
         )
         writer.writeheader()
-        for pid in sorted(set(participant_rows) | set(participants)):
-            data = participants.get(pid, {"variants": set(), "genes": set()})
-            row = participant_rows.get(pid, {})
-            writer.writerow(
-                {
-                    "participant_id": pid,
-                    "group": row.get(group_col, "") if group_col else "",
-                    "n_variants": len(data["variants"]),
-                    "n_genes": len(data["genes"]),
-                    "variants": ";".join(sorted(data["variants"])),
-                    "genes": ";".join(sorted(f"{name}|{gene_id}" for name, gene_id in data["genes"])),
-                }
-            )
+        for row in gene_stats:
+            writer.writerow(row)
+
+    summary_path = f"{out_prefix}.summary.tsv"
+    print(f"Writing participant summary to {summary_path}", flush=True)
     with open(summary_path, "w", newline="") as fh:
         writer = csv.DictWriter(
             fh,
             delimiter="\t",
-            fieldnames=["group", "n_participants", "n_multiple_variant_carriers"],
+            fieldnames=["group", "n_participants", "n_multiple_variant_carriers", "n_unique_variants"],
         )
         writer.writeheader()
         if group_col:
-            by_group = defaultdict(lambda: {"n_participants": 0, "n_multiple_variant_carriers": 0})
+            by_group = defaultdict(lambda: {"n_participants": 0, "n_multiple_variant_carriers": 0, "n_unique_variants": 0})
             for pid, row in participant_rows.items():
                 group = row.get(group_col, "")
                 by_group[group]["n_participants"] += 1
-                if len(participants.get(pid, {"variants": set()})["variants"]) >= 2:
+                n_variants = len(participants.get(pid, {"variants": set()})["variants"])
+                by_group[group]["n_unique_variants"] += n_variants
+                if n_variants >= 2:
                     by_group[group]["n_multiple_variant_carriers"] += 1
             for group in sorted(by_group):
                 writer.writerow({"group": group, **by_group[group]})
@@ -234,6 +259,7 @@ def write_outputs(out_prefix, participants, participant_rows, group_col):
                     "n_multiple_variant_carriers": sum(
                         1 for pid in participant_rows if len(participants.get(pid, {"variants": set()})["variants"]) >= 2
                     ),
+                    "n_unique_variants": sum(len(participants.get(pid, {"variants": set()})["variants"]) for pid in participant_rows),
                 }
             )
 
@@ -252,17 +278,94 @@ def main():
     parser.add_argument("--out-prefix", required=True)
     args = parser.parse_args()
 
-    regions = parse_gtf(args.gtf, set(args.feature_type))
+    feature_types = set(args.feature_type)
+    print(f"Loading genes from {args.gtf}", flush=True)
+    genes = parse_gtf(args.gtf, feature_types)
+    print(f"Loaded {len(genes)} genes", flush=True)
     participant_rows, _ = read_participants(args.participant_tsv, args.participant_id_col, args.group_col)
-    if args.shard_bed:
-        shard_bed = parse_shard_bed(args.shard_bed)
-        vcf_paths = find_overlapping_shards(regions, shard_bed, vcf_root=args.vcf_root, vcf_template=args.vcf_template)
-        participants = scan_vcf_paths(vcf_paths, regions)
-    else:
-        if not args.vcf_dir:
-            raise SystemExit("--vcf-dir is required when --shard-bed is not provided")
-        participants = scan_vcfs(args.vcf_dir, regions)
-    write_outputs(args.out_prefix, participants, participant_rows, args.group_col)
+
+    participants = defaultdict(lambda: {"variants": set(), "genes": set()})
+    gene_stats = []
+    detail_path = f"{args.out_prefix}.variants.tsv"
+    print(f"Writing detailed rows to {detail_path}", flush=True)
+    detail_fh = open(detail_path, "w", newline="")
+    detail_writer = csv.DictWriter(
+        detail_fh,
+        delimiter="\t",
+        fieldnames=["gene_name", "gene_id", "rna_class", "chrom", "pos", "ref", "alt", "variant_id", "participant_id"],
+    )
+    detail_writer.writeheader()
+
+    try:
+        if args.shard_bed:
+            print(f"Loading shard BED from {args.shard_bed}", flush=True)
+            shard_bed = parse_shard_bed(args.shard_bed)
+            for i, gene in enumerate(genes, start=1):
+                print(f"[{i}/{len(genes)}] {gene['gene_name']} ({gene['gene_id']})", flush=True)
+                vcf_paths = find_overlapping_vcfs_for_gene(gene, shard_bed, vcf_root=args.vcf_root, vcf_template=args.vcf_template)
+                print(f"  overlapping VCFs: {len(vcf_paths)}", flush=True)
+                if not vcf_paths:
+                    gene_stats.append(
+                        {
+                            "gene_name": gene["gene_name"],
+                            "gene_id": gene["gene_id"],
+                            "rna_class": gene["rna_class"],
+                            "chrom": gene["chrom"],
+                            "start": gene["start"],
+                            "end": gene["end"],
+                            "n_vcfs": 0,
+                            "n_variants": 0,
+                            "n_participants": 0,
+                        }
+                    )
+                    continue
+                gene_rows, gene_participants, n_variants = scan_gene_vcfs(gene, vcf_paths)
+                print(f"  variants found: {n_variants}, carrier rows: {len(gene_rows)}", flush=True)
+                for row in gene_rows:
+                    detail_writer.writerow(row)
+                detail_fh.flush()
+                for pid, data in gene_participants.items():
+                    participants[pid]["variants"].update(data["variants"])
+                    participants[pid]["genes"].update(data["genes"])
+                gene_stats.append(
+                    {
+                        "gene_name": gene["gene_name"],
+                        "gene_id": gene["gene_id"],
+                        "rna_class": gene["rna_class"],
+                        "chrom": gene["chrom"],
+                        "start": gene["start"],
+                        "end": gene["end"],
+                        "n_vcfs": len(vcf_paths),
+                        "n_variants": n_variants,
+                        "n_participants": len(gene_participants),
+                    }
+                )
+        else:
+            if not args.vcf_dir:
+                raise SystemExit("--vcf-dir is required when --shard-bed is not provided")
+            print(f"Scanning VCF directory {args.vcf_dir}", flush=True)
+            gene_rows, gene_participants, _ = scan_all_vcfs(args.vcf_dir, genes)
+            participants = gene_participants
+            for row in gene_rows:
+                detail_writer.writerow(row)
+            detail_fh.flush()
+            for gene in genes:
+                gene_stats.append(
+                    {
+                        "gene_name": gene["gene_name"],
+                        "gene_id": gene["gene_id"],
+                        "rna_class": gene["rna_class"],
+                        "chrom": gene["chrom"],
+                        "start": gene["start"],
+                        "end": gene["end"],
+                        "n_vcfs": 0,
+                        "n_variants": sum(1 for row in gene_rows if row["gene_id"] == gene["gene_id"]),
+                        "n_participants": len({row["participant_id"] for row in gene_rows if row["gene_id"] == gene["gene_id"]}),
+                    }
+                )
+    finally:
+        detail_fh.close()
+    write_outputs(args.out_prefix, participants, participant_rows, args.group_col, gene_stats)
 
 
 if __name__ == "__main__":
