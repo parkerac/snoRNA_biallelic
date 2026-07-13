@@ -8,6 +8,7 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 - Uses `biallelic_shards.bed` to find the relevant shard/subshard VCFs for each snoRNA gene.
 - Writes one TSV per gene as soon as that gene finishes.
 - Produces end-of-run gene and participant summaries.
+- Records the participant genotype in each per-gene TSV.
 
 ## Suggested layout on CloudOS
 
@@ -40,7 +41,7 @@ This writes:
 If your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
 
 The script prints progress as it loads genes, queues each gene, and reports each gene as it finishes.
-It will try a process pool first and automatically fall back to threads if the runtime blocks process-pool setup.
+It uses `tabix -h` for region fetches when available and otherwise falls back to a plain scan of the VCF file. If you know the VCFs are indexed, `--region-access tabix` is the fastest option.
 
 ## Participant TSV
 
