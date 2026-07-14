@@ -47,6 +47,14 @@ python scripts/2_find_participants_with_2_rare_variants_same_snoRNA.py \
   --out outputs/snorna_biallelic.two_rare_same_snoRNA.tsv
 ```
 
+To calculate rare variant density per snoRNA, run:
+
+```bash
+python scripts/3_calculate_snoRNA_variant_density.py \
+  --gene-summary outputs/snorna_biallelic.gene_summary.tsv \
+  --out outputs/snorna_biallelic.variant_density.tsv
+```
+
 If your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
 
 The script prints progress as it loads genes, queues each shard, and reports each shard as it finishes.
