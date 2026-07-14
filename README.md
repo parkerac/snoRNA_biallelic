@@ -9,6 +9,7 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 - Writes one TSV per gene as soon as that gene finishes.
 - Produces end-of-run gene and participant summaries.
 - Records the participant genotype in each per-gene TSV.
+- Merges nearby genes into shared fetch windows so each shard is queried fewer times.
 
 ## Suggested layout on CloudOS
 
@@ -36,12 +37,13 @@ This writes:
 - `outputs/snorna_biallelic.genes/0001_*.tsv`
 - `outputs/snorna_biallelic.participants.tsv`
 - `outputs/snorna_biallelic.gene_summary.tsv`
+- `outputs/snorna_biallelic.shard_gene_map.tsv`
 - `outputs/snorna_biallelic.summary.tsv`
 
 If your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
 
-The script prints progress as it loads genes, queues each gene, and reports each gene as it finishes.
-It uses `tabix -h` for region fetches when available and otherwise falls back to a plain scan of the VCF file. If you know the VCFs are indexed, `--region-access tabix` is the fastest option.
+The script prints progress as it loads genes, queues each shard, and reports each shard as it finishes.
+It prefers `cyvcf2` for indexed region fetches when available, then falls back to `tabix -h`, and finally to a plain scan of the VCF file. If you know the VCFs are indexed and `cyvcf2` is installed, `--region-access auto` is the fastest option.
 
 ## Participant TSV
 
@@ -49,6 +51,6 @@ The participant table can contain any extra columns you want. The script only ne
 
 ## Notes
 
-- The script is intentionally standard-library only.
+- The script runs without extra dependencies, but `cyvcf2` is used automatically when available.
 - It treats a participant as a carrier for a site if any genotype allele is non-reference.
 - Multi-allelic VCF rows are counted once per gene and participant.
