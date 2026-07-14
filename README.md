@@ -6,7 +6,7 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 
 - Reads a GTF and builds snoRNA intervals from `gene_type` or `gene_biotype`.
 - Uses `biallelic_shards.bed` to find the relevant shard/subshard VCFs for each snoRNA gene.
-- Writes one TSV per gene as soon as that gene finishes.
+- `1_count_snoRNA_multi_variant_carriers.py` writes one TSV per gene as soon as that gene finishes.
 - Produces end-of-run gene and participant summaries for rare variants only.
 - Records the participant genotype plus `AF`, `AC`, and `AN` in each per-gene TSV.
 - Merges nearby genes into shared fetch windows so each shard is queried fewer times.
@@ -21,7 +21,7 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 ## Example
 
 ```bash
-python scripts/count_snoRNA_multi_variant_carriers.py \
+python scripts/1_count_snoRNA_multi_variant_carriers.py \
   --gtf annotations.gtf.gz \
   --shard-bed biallelic_shards.bed \
   --vcf-root vcfs \
@@ -38,6 +38,14 @@ This writes:
 - `outputs/snorna_biallelic.gene_summary.tsv`
 - `outputs/snorna_biallelic.shard_gene_map.tsv`
 - `outputs/snorna_biallelic.summary.tsv`
+
+To find participants with at least two rare variants in the same snoRNA, run:
+
+```bash
+python scripts/2_find_participants_with_2_rare_variants_same_snoRNA.py \
+  --genes-dir outputs/snorna_biallelic.genes \
+  --out outputs/snorna_biallelic.two_rare_same_snoRNA.tsv
+```
 
 If your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
 
