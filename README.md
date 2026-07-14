@@ -7,8 +7,8 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 - Reads a GTF and builds snoRNA intervals from `gene_type` or `gene_biotype`.
 - Uses `biallelic_shards.bed` to find the relevant shard/subshard VCFs for each snoRNA gene.
 - Writes one TSV per gene as soon as that gene finishes.
-- Produces end-of-run gene and participant summaries.
-- Records the participant genotype in each per-gene TSV.
+- Produces end-of-run gene and participant summaries for rare variants only.
+- Records the participant genotype plus `AF`, `AC`, and `AN` in each per-gene TSV.
 - Merges nearby genes into shared fetch windows so each shard is queried fewer times.
 
 ## Suggested layout on CloudOS
@@ -27,7 +27,6 @@ python scripts/count_snoRNA_multi_variant_carriers.py \
   --vcf-root vcfs \
   --participant-tsv participants.tsv \
   --participant-id-col platekey \
-  --group-col phenotype \
   --cpus 16 \
   --out-prefix outputs/snorna_biallelic
 ```
@@ -47,10 +46,11 @@ It prefers `cyvcf2` for indexed region fetches when available, then falls back t
 
 ## Participant TSV
 
-The participant table can contain any extra columns you want. The script only needs the participant ID column and, if you want grouped summaries, a case/control column.
+The participant table can contain any extra columns you want. The script only needs the participant ID column.
 
 ## Notes
 
 - The script runs without extra dependencies, but `cyvcf2` is used automatically when available.
 - It treats a participant as a carrier for a site if any genotype allele is non-reference.
 - Multi-allelic VCF rows are counted once per gene and participant.
+- Final participant and gene summaries include only variants with `AF < 0.001`.
