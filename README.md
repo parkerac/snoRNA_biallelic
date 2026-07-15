@@ -47,6 +47,14 @@ python scripts/2_find_participants_with_2_rare_variants_same_snoRNA.py \
   --out outputs/snorna_biallelic.two_rare_same_snoRNA.tsv
 ```
 
+To find participants with homozygous snoRNA variants, run:
+
+```bash
+python scripts/4_find_participants_with_homozygous_variants.py \
+  --genes-dir outputs/snorna_biallelic.genes \
+  --out outputs/snorna_biallelic.homozygous_variants.tsv
+```
+
 To calculate a coverage score per snoRNA from the AGGV3 site-QC VCFs, run:
 
 ```bash
