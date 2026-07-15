@@ -224,6 +224,17 @@ def process_shard(task):
     gene_stats = {gene["gene_index"]: {"n_sites": 0, "dp_sum": 0.0} for window in windows for gene in window["genes"]}
     records = 0
 
+    if not os.path.exists(vcf_path):
+        return {
+            "shard_index": task["shard_index"],
+            "total_shards": task["total_shards"],
+            "shard": shard,
+            "vcf_path": vcf_path,
+            "gene_stats": gene_stats,
+            "records": 0,
+            "missing": True,
+        }
+
     if region_mode == "cyvcf2":
         vcf = CyVCF(vcf_path)
         for window in windows:
@@ -237,7 +248,15 @@ def process_shard(task):
                     if gene["start"] <= pos <= gene["end"]:
                         gene_stats[gene["gene_index"]]["n_sites"] += 1
                         gene_stats[gene["gene_index"]]["dp_sum"] += dp
-        return {"shard_index": task["shard_index"], "shard": shard, "vcf_path": vcf_path, "gene_stats": gene_stats, "records": records}
+        return {
+            "shard_index": task["shard_index"],
+            "total_shards": task["total_shards"],
+            "shard": shard,
+            "vcf_path": vcf_path,
+            "gene_stats": gene_stats,
+            "records": records,
+            "missing": False,
+        }
 
     regions = [(window["chrom"], window["start"], window["end"]) for window in windows]
     window_index = 0
@@ -259,7 +278,15 @@ def process_shard(task):
                 gene_stats[gene["gene_index"]]["n_sites"] += 1
                 gene_stats[gene["gene_index"]]["dp_sum"] += dp
 
-    return {"shard_index": task["shard_index"], "shard": shard, "vcf_path": vcf_path, "gene_stats": gene_stats, "records": records}
+    return {
+        "shard_index": task["shard_index"],
+        "total_shards": task["total_shards"],
+        "shard": shard,
+        "vcf_path": vcf_path,
+        "gene_stats": gene_stats,
+        "records": records,
+        "missing": False,
+    }
 
 
 def main():
@@ -284,16 +311,18 @@ def main():
     shards = parse_shard_bed(args.shard_bed)
 
     tasks = build_shard_tasks(genes, shards, args.site_qc_root, args.vcf_template)
+    total_tasks = len(tasks)
     for task in tasks:
         task["region_mode"] = args.region_access
+        task["total_shards"] = total_tasks
         print(
-            f"[queued shard {task['shard_index']}] {task['shard']['shard']}/{task['shard']['subshard']}: "
+            f"[queued task {task['shard_index']}/{total_tasks}] {task['shard']['shard']}/{task['shard']['subshard']}: "
             f"{len(task['windows'])} merged windows, {task['vcf_path']}",
             flush=True,
         )
 
-    workers = max(1, min(args.cpus, len(tasks) or 1))
-    print(f"Processing {len(tasks)} shards with {workers} workers", flush=True)
+    workers = max(1, min(args.cpus, total_tasks or 1))
+    print(f"Processing {total_tasks} shards with {workers} workers", flush=True)
 
     gene_stats = {gene["gene_index"]: {"n_sites": 0, "dp_sum": 0.0} for gene in genes}
     try:
@@ -301,8 +330,9 @@ def main():
             futures = [pool.submit(process_shard, task) for task in tasks]
             for future in as_completed(futures):
                 result = future.result()
+                prefix = "missing" if result.get("missing") else "done"
                 print(
-                    f"[done] shard {result['shard']['shard']}/{result['shard']['subshard']} from {os.path.basename(result['vcf_path'])}: "
+                    f"[{prefix} task {result['shard_index']}/{result['total_shards']}] {result['shard']['shard']}/{result['shard']['subshard']} from {os.path.basename(result['vcf_path'])}: "
                     f"{result['records']} MEDIAN_DP records",
                     flush=True,
                 )
@@ -317,8 +347,9 @@ def main():
             futures = [pool.submit(process_shard, task) for task in tasks]
             for future in as_completed(futures):
                 result = future.result()
+                prefix = "missing" if result.get("missing") else "done"
                 print(
-                    f"[done] shard {result['shard']['shard']}/{result['shard']['subshard']} from {os.path.basename(result['vcf_path'])}: "
+                    f"[{prefix} task {result['shard_index']}/{result['total_shards']}] {result['shard']['shard']}/{result['shard']['subshard']} from {os.path.basename(result['vcf_path'])}: "
                     f"{result['records']} MEDIAN_DP records",
                     flush=True,
                 )
