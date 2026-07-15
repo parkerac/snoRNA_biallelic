@@ -60,6 +60,12 @@ python scripts/3_calculate_snoRNA_coverage_score.py \
 
 This uses cohort `MEDIAN_DP` from the site-QC VCF records that overlap each snoRNA interval, so it is a proxy coverage score rather than a true base-wise depth track.
 
+Interpretation:
+
+- `n_site_qc_records` is the number of site-QC records overlapping the snoRNA that had a usable `MEDIAN_DP` value.
+- `coverage_score` is the mean `MEDIAN_DP` across those overlapping records.
+- If `n_site_qc_records` is `0`, then `coverage_score` will be `0.0`.
+
 If you run script 1 and your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
 
 Script 1 prints progress as it loads genes, queues each shard, and reports each shard as it finishes.

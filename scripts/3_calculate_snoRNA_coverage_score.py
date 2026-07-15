@@ -22,6 +22,7 @@ def open_text(path):
 
 def load_genes(path):
     genes = []
+    seen = set()
     with open(path, newline="") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         required = {"gene_index", "gene_name", "gene_id", "chrom", "start", "end"}
@@ -29,17 +30,20 @@ def load_genes(path):
         if missing:
             raise ValueError(f"{path} is missing columns: {', '.join(sorted(missing))}")
         for row in reader:
-            genes.append(
-                {
-                    "gene_index": int(row["gene_index"]),
-                    "gene_name": row["gene_name"],
-                    "gene_id": row["gene_id"],
-                    "rna_class": row.get("rna_class", ""),
-                    "chrom": row["chrom"],
-                    "start": int(row["start"]),
-                    "end": int(row["end"]),
-                }
-            )
+            gene = {
+                "gene_index": int(row["gene_index"]),
+                "gene_name": row["gene_name"],
+                "gene_id": row["gene_id"],
+                "rna_class": row.get("rna_class", ""),
+                "chrom": row["chrom"],
+                "start": int(row["start"]),
+                "end": int(row["end"]),
+            }
+            key = (gene["gene_id"], gene["chrom"], gene["start"], gene["end"], gene["gene_name"], gene["rna_class"])
+            if key in seen:
+                continue
+            seen.add(key)
+            genes.append(gene)
     return sorted(genes, key=lambda g: (g["chrom"], g["start"], g["end"], g["gene_index"]))
 
 
