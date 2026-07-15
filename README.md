@@ -47,17 +47,22 @@ python scripts/2_find_participants_with_2_rare_variants_same_snoRNA.py \
   --out outputs/snorna_biallelic.two_rare_same_snoRNA.tsv
 ```
 
-To calculate rare variant density per snoRNA, run:
+To calculate a coverage score per snoRNA from the AGGV3 site-QC VCFs, run:
 
 ```bash
-python scripts/3_calculate_snoRNA_variant_density.py \
+python scripts/3_calculate_snoRNA_coverage_score.py \
   --gene-summary outputs/snorna_biallelic.gene_summary.tsv \
-  --out outputs/snorna_biallelic.variant_density.tsv
+  --shard-bed biallelic_shards.bed \
+  --site-qc-root site_qc_vcfs \
+  --vcf-template shard-{shard}/subshard-{subshard}/postproc/site_qc.vcf.gz \
+  --out outputs/snorna_biallelic.coverage_score.tsv
 ```
 
-If your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
+This uses cohort `MEDIAN_DP` from the site-QC VCF records that overlap each snoRNA interval, so it is a proxy coverage score rather than a true base-wise depth track.
 
-The script prints progress as it loads genes, queues each shard, and reports each shard as it finishes.
+If you run script 1 and your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
+
+Script 1 prints progress as it loads genes, queues each shard, and reports each shard as it finishes.
 It prefers `cyvcf2` for indexed region fetches when available, then falls back to `tabix -h`, and finally to a plain scan of the VCF file. If you know the VCFs are indexed and `cyvcf2` is installed, `--region-access auto` is the fastest option.
 
 ## Participant TSV
