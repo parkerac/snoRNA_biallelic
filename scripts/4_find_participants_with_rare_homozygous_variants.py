@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""List participants with homozygous snoRNA variants and their variant details."""
+"""List participants with rare homozygous snoRNA variants and their variant details."""
 
 import argparse
 import csv
@@ -7,11 +7,26 @@ import os
 from collections import defaultdict
 
 
+AF_THRESHOLD = 0.001
+
+
 def is_homozygous_alt(gt):
     if not gt:
         return False
     alleles = gt.replace("|", "/").split("/")
     return len(alleles) == 2 and alleles[0] not in {".", "0"} and alleles[0] == alleles[1]
+
+
+def parse_af(value):
+    if value is None or value == "":
+        return []
+    out = []
+    for item in str(value).split(","):
+        try:
+            out.append(float(item))
+        except Exception:
+            pass
+    return out
 
 
 def read_gene_tsv(path):
@@ -23,7 +38,8 @@ def read_gene_tsv(path):
         if missing:
             raise ValueError(f"{path} is missing columns: {', '.join(sorted(missing))}")
         for row in reader:
-            if not is_homozygous_alt(row.get("genotype")):
+            af_values = parse_af(row.get("AF"))
+            if not af_values or min(af_values) >= AF_THRESHOLD or not is_homozygous_alt(row.get("genotype")):
                 continue
             key = (row["participant_id"], row["gene_name"], row["gene_id"])
             hits[key]["variants"][row["variant_id"]] = {
