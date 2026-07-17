@@ -514,10 +514,11 @@ def write_participant_outputs(out_prefix, participants):
 
 def run_tasks(tasks, workers, gene_agg, gene_writers):
     participants = defaultdict(lambda: {"rare_variants": set(), "rare_genes": set()})
+    total_tasks = len(tasks)
 
     def consume_result(result):
         print(
-            f"[done] shard {result['shard']['shard']}/{result['shard']['subshard']} from {os.path.basename(result['vcf_path'])}",
+            f"[done task {result['shard_index']}/{total_tasks}] {result['shard']['shard']}/{result['shard']['subshard']} from {os.path.basename(result['vcf_path'])}",
             flush=True,
         )
         for gene_index, rows in result["rows_by_gene"].items():
