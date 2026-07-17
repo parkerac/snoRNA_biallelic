@@ -7,7 +7,7 @@ import os
 from collections import defaultdict
 
 
-RARE_AF_THRESHOLD = 0.001
+RARE_AF_THRESHOLD = 0.005
 
 
 def parse_af(value):

@@ -88,4 +88,4 @@ The participant table can contain any extra columns you want. The script only ne
 - The script runs without extra dependencies, but `cyvcf2` is used automatically when available.
 - It treats a participant as a carrier for a site if any genotype allele is non-reference.
 - Multi-allelic VCF rows are counted once per gene and participant.
-- Final participant and gene summaries include only variants with `AF < 0.001`.
+- Final participant and gene summaries include only variants with `AF < 0.005`.

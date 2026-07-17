@@ -7,7 +7,7 @@ import os
 from collections import defaultdict
 
 
-AF_THRESHOLD = 0.001
+AF_THRESHOLD = 0.005
 
 
 def is_homozygous_alt(gt):

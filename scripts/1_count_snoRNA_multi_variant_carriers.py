@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover
     CyVCF = None
 
 
-RARE_AF_THRESHOLD = 0.001
+RARE_AF_THRESHOLD = 0.005
 DETAIL_FIELDS = [
     "gene_name",
     "gene_id",
