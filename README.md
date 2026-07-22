@@ -55,6 +55,20 @@ python scripts/4_find_participants_with_rare_homozygous_variants.py \
   --out outputs/snorna_biallelic.homozygous_variants.tsv
 ```
 
+To liftover GRCh38 variant IDs to GRCh37 while preserving the input TSV and adding a lifted variant column, run:
+
+```bash
+python scripts/5_liftover_variant_ids_grch38_to_grch37.py \
+  --variants variants.grch38.tsv \
+  --column variant_id \
+  --chain hg38ToHg19.over.chain.gz \
+  --fasta GRCh37.fa \
+  --out variants.grch37.tsv \
+  --unmapped variants.unmapped.tsv
+```
+
+This expects the UCSC `liftOver` executable on `PATH` and a GRCh37 FASTA with a matching `.fai` index.
+
 To calculate a coverage score per snoRNA from the AGGV3 site-QC VCFs, run:
 
 ```bash
