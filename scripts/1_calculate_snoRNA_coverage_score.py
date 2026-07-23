@@ -23,6 +23,7 @@ def open_text(path):
 def parse_gtf(path, feature_types):
     genes = []
     seen = set()
+    wanted = {str(value).lower() for value in feature_types}
     with open_text(path) as fh:
         for line in fh:
             if line.startswith("#"):
@@ -38,8 +39,10 @@ def parse_gtf(path, feature_types):
                     continue
                 key, value = item.split(" ", 1)
                 attr_map[key] = value.strip().strip('"')
-            gene_type = attr_map.get("gene_type") or attr_map.get("gene_biotype")
-            if feature != "gene" or gene_type not in feature_types:
+            gene_type = (attr_map.get("gene_type") or attr_map.get("gene_biotype") or "").strip()
+            if feature not in {"gene", "transcript"}:
+                continue
+            if gene_type.lower() not in wanted:
                 continue
             gene = {
                 "gene_name": attr_map.get("gene_name", "UNKNOWN"),
