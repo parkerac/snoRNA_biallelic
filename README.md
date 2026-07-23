@@ -72,20 +72,6 @@ python scripts/4_find_double_het_vars.py \
   --out outputs/snorna_biallelic.two_rare_same_snoRNA.tsv
 ```
 
-To liftover GRCh38 variant IDs to GRCh37 while preserving the input TSV and adding a lifted variant column, run:
-
-```bash
-python scripts/5_liftover_variant_ids_grch38_to_grch37.py \
-  --variants variants.grch38.tsv \
-  --column variant_id \
-  --chain hg38ToHg19.over.chain.gz \
-  --fasta GRCh37.fa \
-  --out variants.grch37.tsv \
-  --unmapped variants.unmapped.tsv
-```
-
-This expects the UCSC `liftOver` executable on `PATH` and a GRCh37 FASTA with a matching `.fai` index.
-
 If you run script 2 and your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
 
 Script 2 prints progress as it loads genes, queues each shard, and reports each shard as it finishes.
