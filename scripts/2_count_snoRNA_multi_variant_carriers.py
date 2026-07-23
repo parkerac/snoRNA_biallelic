@@ -3,7 +3,6 @@
 
 import argparse
 import csv
-import gzip
 import os
 import re
 import shutil
@@ -35,50 +34,37 @@ DETAIL_FIELDS = [
 ]
 
 
-def open_text(path):
-    return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path)
-
-
 def safe_name(value):
     value = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value))
     return value.strip("._") or "unknown"
 
 
-def parse_gtf(path, feature_types):
+def load_coverage_summary(path):
     genes = []
-    seen = set()
-    with open_text(path) as fh:
-        for line in fh:
-            if line.startswith("#"):
+    with open(path, newline="") as fh:
+        reader = csv.DictReader(fh, delimiter="\t")
+        required = {"gene_index", "gene_name", "gene_id", "rna_class", "chrom", "start", "end", "coverage_score"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"{path} is missing columns: {', '.join(sorted(missing))}")
+        for row in reader:
+            try:
+                score = float(row["coverage_score"])
+            except Exception:
                 continue
-            parts = line.rstrip("\n").split("\t")
-            if len(parts) < 9:
-                continue
-            chrom, feature, _, start, end, _, _, _, attrs = parts[:9]
-            attr_map = {}
-            for item in attrs.split(";"):
-                item = item.strip()
-                if not item or " " not in item:
-                    continue
-                key, value = item.split(" ", 1)
-                attr_map[key] = value.strip().strip('"')
-            gene_type = attr_map.get("gene_type") or attr_map.get("gene_biotype")
-            if feature != "gene" or gene_type not in feature_types:
-                continue
-            gene = {
-                "chrom": chrom,
-                "start": int(start),
-                "end": int(end),
-                "rna_class": gene_type,
-                "gene_name": attr_map.get("gene_name", "UNKNOWN"),
-                "gene_id": attr_map.get("gene_id", "UNKNOWN"),
-            }
-            key = (gene["gene_id"], gene["chrom"], gene["start"], gene["end"], gene["gene_name"], gene["rna_class"])
-            if key in seen:
-                continue
-            seen.add(key)
-            genes.append(gene)
-    return sorted(genes, key=lambda g: (g["chrom"], g["start"], g["end"], g["gene_name"], g["gene_id"]))
+            genes.append(
+                {
+                    "gene_index": int(row["gene_index"]),
+                    "gene_name": row["gene_name"],
+                    "gene_id": row["gene_id"],
+                    "rna_class": row["rna_class"],
+                    "chrom": row["chrom"],
+                    "start": int(row["start"]),
+                    "end": int(row["end"]),
+                    "coverage_score": score,
+                }
+            )
+    return sorted(genes, key=lambda g: (g["chrom"], g["start"], g["end"], g["gene_index"]))
 
 
 def parse_shard_bed(path):
@@ -553,21 +539,24 @@ def run_tasks(tasks, workers, gene_agg, gene_writers):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--gtf", required=True)
+    parser.add_argument("--coverage-summary", required=True, help="Coverage summary TSV from script 1")
+    parser.add_argument("--min-coverage-score", type=float, default=20.0, help="Minimum coverage_score required to query a gene")
     parser.add_argument("--shard-bed", required=True)
     parser.add_argument("--vcf-root", required=True)
     parser.add_argument("--vcf-template", default="shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz")
     parser.add_argument("--participant-tsv", required=True)
     parser.add_argument("--participant-id-col", required=True)
-    parser.add_argument("--feature-type", action="append", default=["snoRNA"])
     parser.add_argument("--out-prefix", required=True)
     parser.add_argument("--cpus", type=int, default=16)
     parser.add_argument("--region-access", choices=["auto", "cyvcf2", "tabix", "scan"], default="auto")
     args = parser.parse_args()
 
-    print(f"Loading genes from {args.gtf}", flush=True)
-    genes = parse_gtf(args.gtf, set(args.feature_type))
+    print(f"Loading genes from {args.coverage_summary}", flush=True)
+    genes = load_coverage_summary(args.coverage_summary)
     print(f"Loaded {len(genes)} genes", flush=True)
+    before = len(genes)
+    genes = [gene for gene in genes if gene["coverage_score"] >= args.min_coverage_score]
+    print(f"Coverage filter kept {len(genes)}/{before} genes at coverage_score >= {args.min_coverage_score}", flush=True)
     print(f"Loading shard BED from {args.shard_bed}", flush=True)
     shards = parse_shard_bed(args.shard_bed)
     read_participants(args.participant_tsv, args.participant_id_col)

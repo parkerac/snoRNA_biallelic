@@ -20,9 +20,44 @@ def open_text(path):
     return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path)
 
 
-def load_genes(path):
+def parse_gtf(path, feature_types):
     genes = []
     seen = set()
+    with open_text(path) as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 9:
+                continue
+            chrom, _, feature, start, end, _, _, _, attrs = parts[:9]
+            attr_map = {}
+            for item in attrs.split(";"):
+                item = item.strip()
+                if not item or " " not in item:
+                    continue
+                key, value = item.split(" ", 1)
+                attr_map[key] = value.strip().strip('"')
+            gene_type = attr_map.get("gene_type") or attr_map.get("gene_biotype")
+            if feature != "gene" or gene_type not in feature_types:
+                continue
+            gene = {
+                "gene_name": attr_map.get("gene_name", "UNKNOWN"),
+                "gene_id": attr_map.get("gene_id", "UNKNOWN"),
+                "rna_class": gene_type,
+                "chrom": chrom,
+                "start": int(start),
+                "end": int(end),
+            }
+            key = (gene["gene_id"], gene["chrom"], gene["start"], gene["end"], gene["gene_name"], gene["rna_class"])
+            if key not in seen:
+                seen.add(key)
+                genes.append(gene)
+    return sorted(genes, key=lambda g: (g["chrom"], g["start"], g["end"], g["gene_name"], g["gene_id"]))
+
+
+def load_gene_summary(path):
+    genes = []
     with open(path, newline="") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         required = {"gene_index", "gene_name", "gene_id", "chrom", "start", "end"}
@@ -30,21 +65,24 @@ def load_genes(path):
         if missing:
             raise ValueError(f"{path} is missing columns: {', '.join(sorted(missing))}")
         for row in reader:
-            gene = {
-                "gene_index": int(row["gene_index"]),
-                "gene_name": row["gene_name"],
-                "gene_id": row["gene_id"],
-                "rna_class": row.get("rna_class", ""),
-                "chrom": row["chrom"],
-                "start": int(row["start"]),
-                "end": int(row["end"]),
-            }
-            key = (gene["gene_id"], gene["chrom"], gene["start"], gene["end"], gene["gene_name"], gene["rna_class"])
-            if key in seen:
-                continue
-            seen.add(key)
-            genes.append(gene)
+            genes.append(
+                {
+                    "gene_index": int(row["gene_index"]),
+                    "gene_name": row["gene_name"],
+                    "gene_id": row["gene_id"],
+                    "rna_class": row.get("rna_class", ""),
+                    "chrom": row["chrom"],
+                    "start": int(row["start"]),
+                    "end": int(row["end"]),
+                }
+            )
     return sorted(genes, key=lambda g: (g["chrom"], g["start"], g["end"], g["gene_index"]))
+
+
+def assign_gene_indices(genes):
+    for gene_index, gene in enumerate(genes, start=1):
+        gene["gene_index"] = gene_index
+    return genes
 
 
 def parse_shard_bed(path):
@@ -295,7 +333,9 @@ def process_shard(task):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--gene-summary", required=True, help="gene_summary.tsv from script 1")
+    parser.add_argument("--gtf", help="GTF containing snoRNA gene annotations")
+    parser.add_argument("--gene-summary", help="gene_summary.tsv from script 1")
+    parser.add_argument("--feature-type", action="append", default=["snoRNA"])
     parser.add_argument("--shard-bed", required=True, help="biallelic_shards.bed")
     parser.add_argument("--site-qc-root", required=True, help="Directory containing shard/subshard site-QC VCFs")
     parser.add_argument(
@@ -308,8 +348,15 @@ def main():
     parser.add_argument("--region-access", choices=["auto", "cyvcf2", "tabix", "scan"], default="auto")
     args = parser.parse_args()
 
-    print(f"Loading genes from {args.gene_summary}", flush=True)
-    genes = load_genes(args.gene_summary)
+    if bool(args.gtf) == bool(args.gene_summary):
+        parser.error("provide exactly one of --gtf or --gene-summary")
+
+    if args.gtf:
+        print(f"Loading genes from {args.gtf}", flush=True)
+        genes = assign_gene_indices(parse_gtf(args.gtf, set(args.feature_type)))
+    else:
+        print(f"Loading genes from {args.gene_summary}", flush=True)
+        genes = load_gene_summary(args.gene_summary)
     print(f"Loaded {len(genes)} genes", flush=True)
     print(f"Loading shard BED from {args.shard_bed}", flush=True)
     shards = parse_shard_bed(args.shard_bed)

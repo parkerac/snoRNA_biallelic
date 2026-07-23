@@ -4,9 +4,11 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 
 ## What this repo does
 
-- Reads a GTF and builds snoRNA intervals from `gene_type` or `gene_biotype`.
+- Uses a GTF to define snoRNA intervals for coverage scoring.
+- Calculates a coverage score from AGGV3 site-QC VCFs before variant querying.
+- Uses the coverage summary as the gene input for variant querying, so step 2 does not reopen the GTF.
 - Uses `biallelic_shards.bed` to find the relevant shard/subshard VCFs for each snoRNA gene.
-- `1_count_snoRNA_multi_variant_carriers.py` writes one TSV per gene as soon as that gene finishes.
+- `2_count_snoRNA_multi_variant_carriers.py` skips genes below the coverage threshold and writes one TSV per gene as soon as that gene finishes.
 - Produces end-of-run gene and participant summaries for rare variants only.
 - Records the participant genotype plus `AF`, `AC`, and `AN` in each per-gene TSV.
 - Merges nearby genes into shared fetch windows so each shard is queried fewer times.
@@ -18,11 +20,33 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 - `biallelic_shards.bed`
 - `participants.tsv`
 
-## Example
+## Coverage First
+
+To calculate a coverage score per snoRNA from the AGGV3 site-QC VCFs, run:
 
 ```bash
-python scripts/1_count_snoRNA_multi_variant_carriers.py \
+python scripts/1_calculate_snoRNA_coverage_score.py \
   --gtf annotations.gtf.gz \
+  --shard-bed biallelic_shards.bed \
+  --site-qc-root site_qc_vcfs \
+  --vcf-template shard-{shard}/subshard-{subshard}/postproc/site_qc.vcf.gz \
+  --out outputs/snorna_biallelic.coverage_score.tsv
+```
+
+This uses cohort `MEDIAN_DP` from the site-QC VCF records that overlap each snoRNA interval, so it is a proxy coverage score rather than a true base-wise depth track.
+
+Interpretation:
+
+- `n_site_qc_records` is the number of site-QC records overlapping the snoRNA that had a usable `MEDIAN_DP` value.
+- `coverage_score` is the mean `MEDIAN_DP` across those overlapping records.
+- If `n_site_qc_records` is `0`, then `coverage_score` will be `0.0`.
+
+## Variant Query
+
+```bash
+python scripts/2_count_snoRNA_multi_variant_carriers.py \
+  --coverage-summary outputs/snorna_biallelic.coverage_score.tsv \
+  --min-coverage-score 20 \
   --shard-bed biallelic_shards.bed \
   --vcf-root vcfs \
   --participant-tsv participants.tsv \
@@ -42,7 +66,7 @@ This writes:
 To find participants with at least two rare variants in the same snoRNA, run:
 
 ```bash
-python scripts/2_find_participants_with_2_rare_variants_same_snoRNA.py \
+python scripts/3_find_participants_with_2_rare_variants_same_snoRNA.py \
   --genes-dir outputs/snorna_biallelic.genes \
   --out outputs/snorna_biallelic.two_rare_same_snoRNA.tsv
 ```
@@ -69,28 +93,9 @@ python scripts/5_liftover_variant_ids_grch38_to_grch37.py \
 
 This expects the UCSC `liftOver` executable on `PATH` and a GRCh37 FASTA with a matching `.fai` index.
 
-To calculate a coverage score per snoRNA from the AGGV3 site-QC VCFs, run:
+If you run script 2 and your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
 
-```bash
-python scripts/3_calculate_snoRNA_coverage_score.py \
-  --gene-summary outputs/snorna_biallelic.gene_summary.tsv \
-  --shard-bed biallelic_shards.bed \
-  --site-qc-root site_qc_vcfs \
-  --vcf-template shard-{shard}/subshard-{subshard}/postproc/site_qc.vcf.gz \
-  --out outputs/snorna_biallelic.coverage_score.tsv
-```
-
-This uses cohort `MEDIAN_DP` from the site-QC VCF records that overlap each snoRNA interval, so it is a proxy coverage score rather than a true base-wise depth track.
-
-Interpretation:
-
-- `n_site_qc_records` is the number of site-QC records overlapping the snoRNA that had a usable `MEDIAN_DP` value.
-- `coverage_score` is the mean `MEDIAN_DP` across those overlapping records.
-- If `n_site_qc_records` is `0`, then `coverage_score` will be `0.0`.
-
-If you run script 1 and your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
-
-Script 1 prints progress as it loads genes, queues each shard, and reports each shard as it finishes.
+Script 2 prints progress as it loads genes, queues each shard, and reports each shard as it finishes.
 It prefers `cyvcf2` for indexed region fetches when available, then falls back to `tabix -h`, and finally to a plain scan of the VCF file. If you know the VCFs are indexed and `cyvcf2` is installed, `--region-access auto` is the fastest option.
 
 ## Participant TSV
