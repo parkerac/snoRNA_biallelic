@@ -376,7 +376,7 @@ def process_shard(task):
 
 class GeneWriter:
     def __init__(self, detail_dir, gene):
-        self.path = os.path.join(detail_dir, f"{gene['gene_index']:04d}_{safe_name(gene['gene_name'])}_{safe_name(gene['gene_id'])}.tsv")
+        self.path = os.path.join(detail_dir, f"{safe_name(gene['gene_name'])}_{safe_name(gene['gene_id'])}.tsv")
         self.handle = open(self.path, "w", newline="")
         self.writer = csv.DictWriter(self.handle, delimiter="\t", fieldnames=DETAIL_FIELDS)
         self.writer.writeheader()
