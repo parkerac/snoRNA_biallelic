@@ -66,7 +66,7 @@ This writes:
 To find participants with at least two rare heterozygous variants in the same snoRNA, run:
 
 ```bash
-python scripts/3_find_participants_with_2_rare_variants_same_snoRNA.py \
+python scripts/3_find_double_het_vars.py \
   --genes-dir outputs/snorna_biallelic.genes \
   --out outputs/snorna_biallelic.two_rare_same_snoRNA.tsv
 ```
@@ -74,7 +74,7 @@ python scripts/3_find_participants_with_2_rare_variants_same_snoRNA.py \
 To find participants with rare homozygous snoRNA variants, run:
 
 ```bash
-python scripts/4_find_participants_with_rare_homozygous_variants.py \
+python scripts/4_find_hom_vars.py \
   --genes-dir outputs/snorna_biallelic.genes \
   --out outputs/snorna_biallelic.homozygous_variants.tsv
 ```
