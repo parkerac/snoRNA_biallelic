@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Count snoRNA-overlapping variants gene by gene from AGGV3 shard BEDs."""
+"""Write rare snoRNA variant rows to one TSV per gene."""
 
 import argparse
 import csv
+import gzip
 import os
 import re
 import shutil
@@ -32,6 +33,10 @@ DETAIL_FIELDS = [
     "AC",
     "AN",
 ]
+
+
+def open_text(path):
+    return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path)
 
 
 def safe_name(value):
@@ -83,7 +88,6 @@ def parse_shard_bed(path):
                     "end": int(parts[2]),
                     "shard": parts[4] if len(parts) > 4 else "",
                     "subshard": parts[5] if len(parts) > 5 else "",
-                    "vcf_path": parts[6] if len(parts) > 6 else "",
                 }
             )
     return sorted(shards, key=lambda s: (s["chrom"], s["start"], s["end"], s["shard"], s["subshard"]))
@@ -124,21 +128,6 @@ def format_gt_alleles(genotype):
         return "." if allele is None or allele < 0 else str(allele)
 
     return f"{fmt(a1)}{sep}{fmt(a2)}"
-
-
-def read_participants(path, id_col):
-    rows = {}
-    with open(path, newline="") as fh:
-        reader = csv.DictReader(fh, delimiter="\t")
-        if id_col not in reader.fieldnames:
-            raise ValueError(f"Missing participant id column: {id_col}")
-        for row in reader:
-            rows[row[id_col]] = row
-    return rows
-
-
-def safe_region_strings(regions):
-    return [f"{chrom}:{start}-{end}" for chrom, start, end in regions]
 
 
 def has_index(vcf_path):
@@ -204,6 +193,10 @@ def extract_info_from_cyvcf2(variant):
         except Exception:
             info[key] = None
     return info
+
+
+def safe_region_strings(regions):
+    return [f"{chrom}:{start}-{end}" for chrom, start, end in regions]
 
 
 def iter_vcf_rows(vcf_path, regions, region_mode):
@@ -285,38 +278,20 @@ def build_shard_tasks(genes, shards, vcf_root, vcf_template):
         by_chrom[gene["chrom"]].append(gene)
 
     tasks = []
-    manifest_rows = []
     for shard_index, shard in enumerate(shards, start=1):
         shard_genes = [gene for gene in by_chrom.get(shard["chrom"], []) if gene_overlaps_interval(gene, shard["start"], shard["end"])]
         if not shard_genes:
             continue
-        vcf_path = os.path.join(vcf_root, vcf_template.format(shard=shard["shard"], subshard=shard["subshard"]))
-        windows = merge_gene_windows(shard_genes)
         tasks.append(
             {
                 "shard_index": shard_index,
                 "shard": shard,
-                "vcf_path": vcf_path,
-                "windows": windows,
+                "vcf_path": os.path.join(vcf_root, vcf_template.format(shard=shard["shard"], subshard=shard["subshard"])),
+                "windows": merge_gene_windows(shard_genes),
                 "gene_indices": [gene["gene_index"] for gene in shard_genes],
             }
         )
-        for window_index, window in enumerate(windows, start=1):
-            manifest_rows.append(
-                {
-                    "shard_index": shard_index,
-                    "chrom": shard["chrom"],
-                    "shard": shard["shard"],
-                    "subshard": shard["subshard"],
-                    "vcf_path": vcf_path,
-                    "window_index": window_index,
-                    "window_start": window["start"],
-                    "window_end": window["end"],
-                    "gene_count": len(window["genes"]),
-                    "genes": ";".join(f"{gene['gene_name']}|{gene['gene_id']}" for gene in window["genes"]),
-                }
-            )
-    return tasks, manifest_rows
+    return tasks
 
 
 def process_shard(task):
@@ -336,12 +311,13 @@ def process_shard(task):
             if not overlapping_genes:
                 continue
 
-            info = record["info"]
-            af_text = info_to_string(info.get("AF"))
-            ac_text = info_to_string(info.get("AC"))
-            an_text = info_to_string(info.get("AN"))
-            af_values = info_to_floats(info.get("AF"))
-            rare = bool(af_values and min(af_values) < RARE_AF_THRESHOLD)
+            af_values = info_to_floats(record["info"].get("AF"))
+            if not af_values or min(af_values) >= RARE_AF_THRESHOLD:
+                continue
+
+            af_text = info_to_string(record["info"].get("AF"))
+            ac_text = info_to_string(record["info"].get("AC"))
+            an_text = info_to_string(record["info"].get("AN"))
             variant_id = f"{chrom}:{pos}:{ref}:{alt}"
 
             if "genotypes" in record:
@@ -386,7 +362,6 @@ def process_shard(task):
                             "AF": af_text,
                             "AC": ac_text,
                             "AN": an_text,
-                            "__rare": rare,
                         }
                     )
 
@@ -403,7 +378,7 @@ class GeneWriter:
     def __init__(self, detail_dir, gene):
         self.path = os.path.join(detail_dir, f"{gene['gene_index']:04d}_{safe_name(gene['gene_name'])}_{safe_name(gene['gene_id'])}.tsv")
         self.handle = open(self.path, "w", newline="")
-        self.writer = csv.DictWriter(self.handle, delimiter="\t", fieldnames=DETAIL_FIELDS, extrasaction="ignore")
+        self.writer = csv.DictWriter(self.handle, delimiter="\t", fieldnames=DETAIL_FIELDS)
         self.writer.writeheader()
 
     def write_rows(self, rows):
@@ -415,112 +390,17 @@ class GeneWriter:
         self.handle.close()
 
 
-def write_manifest(out_prefix, rows):
-    path = f"{out_prefix}.shard_gene_map.tsv"
-    print(f"Writing shard-gene manifest to {path}", flush=True)
-    with open(path, "w", newline="") as fh:
-        writer = csv.DictWriter(
-            fh,
-            delimiter="\t",
-            fieldnames=["shard_index", "chrom", "shard", "subshard", "vcf_path", "window_index", "window_start", "window_end", "gene_count", "genes"],
-        )
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def write_gene_summary(out_prefix, gene_agg, gene_writers):
-    path = f"{out_prefix}.gene_summary.tsv"
-    print(f"Writing gene summary to {path}", flush=True)
-    with open(path, "w", newline="") as fh:
-        writer = csv.DictWriter(
-            fh,
-            delimiter="\t",
-            fieldnames=[
-                "gene_index",
-                "gene_name",
-                "gene_id",
-                "rna_class",
-                "chrom",
-                "start",
-                "end",
-                "n_vcfs",
-                "n_rare_variants",
-                "n_rare_participants",
-                "detail_path",
-            ],
-        )
-        writer.writeheader()
-        for gene_index in sorted(gene_agg):
-            row = gene_agg[gene_index]
-            writer.writerow(
-                {
-                    "gene_index": gene_index,
-                    "gene_name": row["gene_name"],
-                    "gene_id": row["gene_id"],
-                    "rna_class": row["rna_class"],
-                    "chrom": row["chrom"],
-                    "start": row["start"],
-                    "end": row["end"],
-                    "n_vcfs": row["n_vcfs"],
-                    "n_rare_variants": len(row["rare_variant_ids"]),
-                    "n_rare_participants": len(row["rare_participants"]),
-                    "detail_path": gene_writers[gene_index].path,
-                }
-            )
-
-
-def write_participant_outputs(out_prefix, participants):
-    part_path = f"{out_prefix}.participants.tsv"
-    summary_path = f"{out_prefix}.summary.tsv"
-    print(f"Writing participant details to {part_path}", flush=True)
-    with open(part_path, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, delimiter="\t", fieldnames=["participant_id", "n_rare_variants", "n_rare_genes", "rare_variants", "rare_genes"])
-        writer.writeheader()
-        for pid in sorted(participants):
-            data = participants[pid]
-            writer.writerow(
-                {
-                    "participant_id": pid,
-                    "n_rare_variants": len(data["rare_variants"]),
-                    "n_rare_genes": len(data["rare_genes"]),
-                    "rare_variants": ";".join(sorted(data["rare_variants"])),
-                    "rare_genes": ";".join(sorted(f"{name}|{gene_id}" for name, gene_id in data["rare_genes"])),
-                }
-            )
-
-    print(f"Writing participant summary to {summary_path}", flush=True)
-    with open(summary_path, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, delimiter="\t", fieldnames=["n_participants", "n_rare_variant_carriers", "n_rare_variants", "n_rare_genes"])
-        writer.writeheader()
-        writer.writerow(
-            {
-                "n_participants": len(participants),
-                "n_rare_variant_carriers": sum(1 for data in participants.values() if data["rare_variants"]),
-                "n_rare_variants": sum(len(data["rare_variants"]) for data in participants.values()),
-                "n_rare_genes": sum(len(data["rare_genes"]) for data in participants.values()),
-            }
-        )
-
-
-def run_tasks(tasks, workers, gene_agg, gene_writers):
-    participants = defaultdict(lambda: {"rare_variants": set(), "rare_genes": set()})
+def run_tasks(tasks, workers, gene_writers):
     total_tasks = len(tasks)
 
     def consume_result(result):
+        count = sum(len(rows) for rows in result["rows_by_gene"].values())
         print(
-            f"[done task {result['shard_index']}/{total_tasks}] {result['shard']['shard']}/{result['shard']['subshard']} from {os.path.basename(result['vcf_path'])}",
+            f"[done task {result['shard_index']}/{total_tasks}] {result['shard']['shard']}/{result['shard']['subshard']} from {os.path.basename(result['vcf_path'])}: {count} rare variant rows",
             flush=True,
         )
         for gene_index, rows in result["rows_by_gene"].items():
             gene_writers[gene_index].write_rows(rows)
-            for row in rows:
-                if row["__rare"]:
-                    gene_agg[gene_index]["rare_variant_ids"].add(row["variant_id"])
-                    gene_agg[gene_index]["rare_participants"].add(row["participant_id"])
-                    participants[row["participant_id"]]["rare_variants"].add(row["variant_id"])
-                    participants[row["participant_id"]]["rare_genes"].add((row["gene_name"], row["gene_id"]))
-        for gene_index in result["gene_indices"]:
-            gene_agg[gene_index]["n_vcfs"] += 1
 
     try:
         with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -534,8 +414,6 @@ def run_tasks(tasks, workers, gene_agg, gene_writers):
             for future in as_completed(futures):
                 consume_result(future.result())
 
-    return participants
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -544,8 +422,6 @@ def main():
     parser.add_argument("--shard-bed", required=True)
     parser.add_argument("--vcf-root", required=True)
     parser.add_argument("--vcf-template", default="shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz")
-    parser.add_argument("--participant-tsv", required=True)
-    parser.add_argument("--participant-id-col", required=True)
     parser.add_argument("--out-prefix", required=True)
     parser.add_argument("--cpus", type=int, default=16)
     parser.add_argument("--region-access", choices=["auto", "cyvcf2", "tabix", "scan"], default="auto")
@@ -557,9 +433,9 @@ def main():
     before = len(genes)
     genes = [gene for gene in genes if gene["coverage_score"] >= args.min_coverage_score]
     print(f"Coverage filter kept {len(genes)}/{before} genes at coverage_score >= {args.min_coverage_score}", flush=True)
+
     print(f"Loading shard BED from {args.shard_bed}", flush=True)
     shards = parse_shard_bed(args.shard_bed)
-    read_participants(args.participant_tsv, args.participant_id_col)
 
     out_prefix_dir = os.path.dirname(args.out_prefix)
     if out_prefix_dir:
@@ -568,42 +444,25 @@ def main():
     os.makedirs(detail_dir, exist_ok=True)
 
     gene_writers = {}
-    gene_agg = {}
-    for gene_index, gene in enumerate(genes, start=1):
-        gene["gene_index"] = gene_index
-        gene_writers[gene_index] = GeneWriter(detail_dir, gene)
-        gene_agg[gene_index] = {
-            "gene_name": gene["gene_name"],
-            "gene_id": gene["gene_id"],
-            "rna_class": gene["rna_class"],
-            "chrom": gene["chrom"],
-            "start": gene["start"],
-            "end": gene["end"],
-            "n_vcfs": 0,
-            "rare_variant_ids": set(),
-            "rare_participants": set(),
-        }
+    for gene in genes:
+        gene_writers[gene["gene_index"]] = GeneWriter(detail_dir, gene)
 
-    tasks, manifest_rows = build_shard_tasks(genes, shards, args.vcf_root, args.vcf_template)
+    tasks = build_shard_tasks(genes, shards, args.vcf_root, args.vcf_template)
+    total_tasks = len(tasks)
     for task in tasks:
         task["region_mode"] = args.region_access
         print(
-            f"[queued shard {task['shard_index']}] {task['shard']['shard']}/{task['shard']['subshard']}: "
+            f"[queued task {task['shard_index']}/{total_tasks}] {task['shard']['shard']}/{task['shard']['subshard']}: "
             f"{len(task['windows'])} merged windows, {task['vcf_path']}",
             flush=True,
         )
 
-    write_manifest(args.out_prefix, manifest_rows)
-
-    workers = max(1, min(args.cpus, len(tasks) or 1))
-    print(f"Processing {len(tasks)} shards with {workers} workers", flush=True)
-    participants = run_tasks(tasks, workers, gene_agg, gene_writers)
+    workers = max(1, min(args.cpus, total_tasks or 1))
+    print(f"Processing {total_tasks} shards with {workers} workers", flush=True)
+    run_tasks(tasks, workers, gene_writers)
 
     for writer in gene_writers.values():
         writer.close()
-
-    write_gene_summary(args.out_prefix, gene_agg, gene_writers)
-    write_participant_outputs(args.out_prefix, participants)
 
 
 if __name__ == "__main__":

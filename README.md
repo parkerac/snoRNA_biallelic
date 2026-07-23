@@ -8,9 +8,8 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 - Calculates a coverage score from AGGV3 site-QC VCFs before variant querying.
 - Uses the coverage summary as the gene input for variant querying, so step 2 does not reopen the GTF.
 - Uses `biallelic_shards.bed` to find the relevant shard/subshard VCFs for each snoRNA gene.
-- `2_count_snoRNA_multi_variant_carriers.py` skips genes below the coverage threshold and writes one TSV per gene as soon as that gene finishes.
-- Produces end-of-run gene and participant summaries for rare variants only.
-- Records the participant genotype plus `AF`, `AC`, and `AN` in each per-gene TSV.
+- `2_write_gene_variant_tsvs.py` skips genes below the coverage threshold and writes one TSV per gene as soon as that gene finishes.
+- Writes rare variant rows only, with participant genotype plus `AF`, `AC`, and `AN` in each per-gene TSV.
 - Merges nearby genes into shared fetch windows so each shard is queried fewer times.
 
 ## Suggested layout on CloudOS
@@ -18,7 +17,7 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 - `annotations.gtf.gz`
 - `vcfs/`
 - `biallelic_shards.bed`
-- `participants.tsv`
+- `participants.tsv` optional, if you want downstream participant annotation
 
 ## Coverage First
 
@@ -44,13 +43,11 @@ Interpretation:
 ## Variant Query
 
 ```bash
-python scripts/2_count_snoRNA_multi_variant_carriers.py \
+python scripts/2_write_gene_variant_tsvs.py \
   --coverage-summary outputs/snorna_biallelic.coverage_score.tsv \
   --min-coverage-score 20 \
   --shard-bed biallelic_shards.bed \
   --vcf-root vcfs \
-  --participant-tsv participants.tsv \
-  --participant-id-col platekey \
   --cpus 16 \
   --out-prefix outputs/snorna_biallelic
 ```
@@ -58,10 +55,6 @@ python scripts/2_count_snoRNA_multi_variant_carriers.py \
 This writes:
 
 - `outputs/snorna_biallelic.genes/0001_*.tsv`
-- `outputs/snorna_biallelic.participants.tsv`
-- `outputs/snorna_biallelic.gene_summary.tsv`
-- `outputs/snorna_biallelic.shard_gene_map.tsv`
-- `outputs/snorna_biallelic.summary.tsv`
 
 To find participants with at least two rare heterozygous variants in the same snoRNA, run:
 
@@ -100,7 +93,7 @@ It prefers `cyvcf2` for indexed region fetches when available, then falls back t
 
 ## Participant TSV
 
-The participant table can contain any extra columns you want. The script only needs the participant ID column.
+The participant table is not needed by scripts 1 to 4, but you can keep one around for later case/control annotation or other downstream filtering.
 
 ## Notes
 
