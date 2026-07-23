@@ -56,20 +56,20 @@ This writes:
 
 - `outputs/snorna_biallelic.genes/0001_*.tsv`
 
-To find participants with at least two rare heterozygous variants in the same snoRNA, run:
-
-```bash
-python scripts/3_find_double_het_vars.py \
-  --genes-dir outputs/snorna_biallelic.genes \
-  --out outputs/snorna_biallelic.two_rare_same_snoRNA.tsv
-```
-
 To find participants with rare homozygous snoRNA variants, run:
 
 ```bash
-python scripts/4_find_hom_vars.py \
+python scripts/3_find_hom_vars.py \
   --genes-dir outputs/snorna_biallelic.genes \
   --out outputs/snorna_biallelic.homozygous_variants.tsv
+```
+
+To find participants with at least two rare heterozygous variants in the same snoRNA, run:
+
+```bash
+python scripts/4_find_double_het_vars.py \
+  --genes-dir outputs/snorna_biallelic.genes \
+  --out outputs/snorna_biallelic.two_rare_same_snoRNA.tsv
 ```
 
 To liftover GRCh38 variant IDs to GRCh37 while preserving the input TSV and adding a lifted variant column, run:
