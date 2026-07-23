@@ -32,7 +32,7 @@ def read_variants(path, column):
             variants = [parse_variant(row[column]) if row.get(column) else None for row in rows]
             return rows, variants
     with open(path) as fh:
-        variants = [parse_variant(line) for line in fh if line.strip() and not line.startswith("#")]
+        variants = [parse_variant(line) for line in fh if line.strip()]
     return None, variants
 
 

@@ -46,6 +46,7 @@ def safe_name(value):
 
 def parse_gtf(path, feature_types):
     genes = []
+    seen = set()
     with open_text(path) as fh:
         for line in fh:
             if line.startswith("#"):
@@ -53,7 +54,7 @@ def parse_gtf(path, feature_types):
             parts = line.rstrip("\n").split("\t")
             if len(parts) < 9:
                 continue
-            chrom, _, _, start, end, _, _, _, attrs = parts[:9]
+            chrom, feature, _, start, end, _, _, _, attrs = parts[:9]
             attr_map = {}
             for item in attrs.split(";"):
                 item = item.strip()
@@ -62,18 +63,21 @@ def parse_gtf(path, feature_types):
                 key, value = item.split(" ", 1)
                 attr_map[key] = value.strip().strip('"')
             gene_type = attr_map.get("gene_type") or attr_map.get("gene_biotype")
-            if gene_type not in feature_types:
+            if feature != "gene" or gene_type not in feature_types:
                 continue
-            genes.append(
-                {
-                    "chrom": chrom,
-                    "start": int(start),
-                    "end": int(end),
-                    "rna_class": gene_type,
-                    "gene_name": attr_map.get("gene_name", "UNKNOWN"),
-                    "gene_id": attr_map.get("gene_id", "UNKNOWN"),
-                }
-            )
+            gene = {
+                "chrom": chrom,
+                "start": int(start),
+                "end": int(end),
+                "rna_class": gene_type,
+                "gene_name": attr_map.get("gene_name", "UNKNOWN"),
+                "gene_id": attr_map.get("gene_id", "UNKNOWN"),
+            }
+            key = (gene["gene_id"], gene["chrom"], gene["start"], gene["end"], gene["gene_name"], gene["rna_class"])
+            if key in seen:
+                continue
+            seen.add(key)
+            genes.append(gene)
     return sorted(genes, key=lambda g: (g["chrom"], g["start"], g["end"], g["gene_name"], g["gene_id"]))
 
 
