@@ -63,7 +63,7 @@ This writes:
 - `outputs/snorna_biallelic.shard_gene_map.tsv`
 - `outputs/snorna_biallelic.summary.tsv`
 
-To find participants with at least two rare variants in the same snoRNA, run:
+To find participants with at least two rare heterozygous variants in the same snoRNA, run:
 
 ```bash
 python scripts/3_find_participants_with_2_rare_variants_same_snoRNA.py \
