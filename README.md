@@ -83,12 +83,12 @@ To prepare those double-het rows for phasing with `phasing/scripts/phase_nearby_
 ```bash
 python scripts/5_prepare_double_het_phasing_tsv.py \
   --double-het-tsv outputs/snorna_biallelic.two_rare_same_snoRNA.tsv \
-  --filepath-details filepath_details.tsv \
-  --reference-path reference.fa \
+  --filepath-details /path/to/filepath_details.tsv \
+  --reference-path /path/to/reference.fa \
   --out outputs/snorna_biallelic.double_het_for_phasing.tsv
 ```
 
-The `filepath_details.tsv` file must contain `platekey`, `bam`, `vcf`, `father_bam`, `mother_bam`, `father_vcf`, `mother_vcf`, `father_sample`, and `mother_sample` columns. The output TSV can be passed directly to `phase_nearby_variants.py` with `--pairs-tsv`.
+The `filepath_details.tsv` file must be a TSV with `platekey`, `bam`, `vcf`, `father_bam`, `mother_bam`, `father_vcf`, `mother_vcf`, `father_sample`, and `mother_sample` columns. The output TSV can be passed directly to `phase_nearby_variants.py` with `--pairs-tsv`.
 
 ```bash
 python ../phasing/scripts/phase_nearby_variants.py \
