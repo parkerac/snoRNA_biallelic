@@ -431,11 +431,14 @@ class GeneWriter:
 
 def run_tasks(tasks, workers, gene_writers):
     total_tasks = len(tasks)
+    completed = 0
 
     def consume_result(result):
+        nonlocal completed
+        completed += 1
         count = sum(len(rows) for rows in result["rows_by_gene"].values())
         print(
-            f"[done task {result['shard_index']}/{total_tasks}] {result['shard']['shard']}/{result['shard']['subshard']} from {os.path.basename(result['vcf_path'])}: {count} rare variant rows",
+            f"[done task {completed}/{total_tasks}] {result['shard']['shard']}/{result['shard']['subshard']} from {os.path.basename(result['vcf_path'])}: {count} rare variant rows",
             flush=True,
         )
         for gene_index, rows in result["rows_by_gene"].items():
@@ -494,11 +497,11 @@ def main():
 
     tasks = build_shard_tasks(genes, shards, args.vcf_root, args.vcf_template)
     total_tasks = len(tasks)
-    for task in tasks:
+    for task_number, task in enumerate(tasks, start=1):
         task["region_mode"] = args.region_access
         task["allowed_platekeys"] = allowed_platekeys
         print(
-            f"[queued task {task['shard_index']}/{total_tasks}] {task['shard']['shard']}/{task['shard']['subshard']}: "
+            f"[queued task {task_number}/{total_tasks}] {task['shard']['shard']}/{task['shard']['subshard']}: "
             f"{len(task['windows'])} merged windows, {task['vcf_path']}",
             flush=True,
         )
