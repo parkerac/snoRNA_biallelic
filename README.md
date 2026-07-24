@@ -46,11 +46,16 @@ Interpretation:
 python scripts/2_write_gene_variant_tsvs.py \
   --coverage-summary outputs/snorna_biallelic.coverage_score.tsv \
   --min-coverage-score 20 \
+  --participant-map participant_map.tsv \
+  --case-participant-ids cases.txt \
+  --control-participant-ids controls.txt \
   --shard-bed biallelic_shards.bed \
   --vcf-root vcfs \
   --cpus 16 \
   --out-prefix outputs/snorna_biallelic
 ```
+
+`cases.txt` and `controls.txt` should contain one `participant_id` per line and no header. The participant map must contain `participant_id` and `platekey` columns.
 
 This writes:
 
@@ -79,7 +84,7 @@ It prefers `cyvcf2` for indexed region fetches when available, then falls back t
 
 ## Participant TSV
 
-The participant table is not needed by scripts 1 to 4, but you can keep one around for later case/control annotation or other downstream filtering.
+The participant table is not needed by scripts 1 to 4 unless you want to filter script 2 to a case/control subset. In that case, use the `participant_id` to `platekey` map plus one plain-text ID file per group.
 
 ## Notes
 

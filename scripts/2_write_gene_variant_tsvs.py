@@ -44,6 +44,45 @@ def safe_name(value):
     return value.strip("._") or "unknown"
 
 
+def read_id_list(path):
+    ids = set()
+    with open(path) as fh:
+        for line in fh:
+            value = line.strip()
+            if value:
+                ids.add(value)
+    return ids
+
+
+def load_platekey_filter(participant_map_path, case_ids_path, control_ids_path):
+    selected_ids = set()
+    if case_ids_path:
+        selected_ids.update(read_id_list(case_ids_path))
+    if control_ids_path:
+        selected_ids.update(read_id_list(control_ids_path))
+    if not selected_ids:
+        return None
+    if not participant_map_path:
+        raise ValueError("--participant-map is required when --case-participant-ids or --control-participant-ids is used")
+
+    platekeys = set()
+    missing = set()
+    with open(participant_map_path, newline="") as fh:
+        reader = csv.DictReader(fh, delimiter="\t")
+        required = {"participant_id", "platekey"}
+        missing_cols = required - set(reader.fieldnames or [])
+        if missing_cols:
+            raise ValueError(f"{participant_map_path} is missing columns: {', '.join(sorted(missing_cols))}")
+        for row in reader:
+            if row["participant_id"] in selected_ids:
+                platekeys.add(row["platekey"])
+                selected_ids.discard(row["participant_id"])
+    missing = selected_ids
+    if missing:
+        print(f"Warning: {len(missing)} participant_id values were not found in {participant_map_path}", flush=True)
+    return platekeys
+
+
 def load_coverage_summary(path):
     genes = []
     with open(path, newline="") as fh:
@@ -324,7 +363,7 @@ def process_shard(task):
                 carrier_rows = [
                     (sample, gt)
                     for sample, gt in zip(record["samples"], record["genotypes"])
-                    if gt not in {".", "./.", ".|."} and is_carrier(gt)
+                    if gt not in {".", "./.", ".|."} and is_carrier(gt) and (task["allowed_platekeys"] is None or sample in task["allowed_platekeys"])
                 ]
             else:
                 fmt = record["fmt"]
@@ -337,7 +376,7 @@ def process_shard(task):
                     if len(fields) <= gt_idx:
                         continue
                     gt = fields[gt_idx]
-                    if gt in {".", "./.", ".|."} or not is_carrier(gt):
+                    if gt in {".", "./.", ".|."} or not is_carrier(gt) or (task["allowed_platekeys"] is not None and sample not in task["allowed_platekeys"]):
                         continue
                     carrier_rows.append((sample, gt))
 
@@ -419,6 +458,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--coverage-summary", required=True, help="Coverage summary TSV from script 1")
     parser.add_argument("--min-coverage-score", type=float, default=20.0, help="Minimum coverage_score required to query a gene")
+    parser.add_argument("--participant-map", help="TSV with participant_id and platekey columns")
+    parser.add_argument("--case-participant-ids", help="One participant_id per line for cases")
+    parser.add_argument("--control-participant-ids", help="One participant_id per line for controls")
     parser.add_argument("--shard-bed", required=True)
     parser.add_argument("--vcf-root", required=True)
     parser.add_argument("--vcf-template", default="shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz")
@@ -436,6 +478,9 @@ def main():
 
     print(f"Loading shard BED from {args.shard_bed}", flush=True)
     shards = parse_shard_bed(args.shard_bed)
+    allowed_platekeys = load_platekey_filter(args.participant_map, args.case_participant_ids, args.control_participant_ids)
+    if allowed_platekeys is not None:
+        print(f"Participant filter enabled for {len(allowed_platekeys)} platekeys", flush=True)
 
     out_prefix_dir = os.path.dirname(args.out_prefix)
     if out_prefix_dir:
@@ -451,6 +496,7 @@ def main():
     total_tasks = len(tasks)
     for task in tasks:
         task["region_mode"] = args.region_access
+        task["allowed_platekeys"] = allowed_platekeys
         print(
             f"[queued task {task['shard_index']}/{total_tasks}] {task['shard']['shard']}/{task['shard']['subshard']}: "
             f"{len(task['windows'])} merged windows, {task['vcf_path']}",
