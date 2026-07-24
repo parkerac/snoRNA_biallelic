@@ -338,7 +338,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gtf", help="GTF containing snoRNA gene annotations")
     parser.add_argument("--gene-summary", help="gene_summary.tsv from script 1")
-    parser.add_argument("--feature-type", action="append", default=["snoRNA"])
+    parser.add_argument("--feature-type", default=None, help="RNA feature type to keep; defaults to snoRNA")
     parser.add_argument("--shard-bed", required=True, help="biallelic_shards.bed")
     parser.add_argument("--site-qc-root", required=True, help="Directory containing shard/subshard site-QC VCFs")
     parser.add_argument(
@@ -356,7 +356,8 @@ def main():
 
     if args.gtf:
         print(f"Loading genes from {args.gtf}", flush=True)
-        genes = assign_gene_indices(parse_gtf(args.gtf, set(args.feature_type)))
+        feature_types = [args.feature_type] if args.feature_type else ["snoRNA"]
+        genes = assign_gene_indices(parse_gtf(args.gtf, set(feature_types)))
     else:
         print(f"Loading genes from {args.gene_summary}", flush=True)
         genes = load_gene_summary(args.gene_summary)
