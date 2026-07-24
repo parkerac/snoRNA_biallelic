@@ -11,6 +11,7 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 - `2_write_gene_variant_tsvs.py` skips genes below the coverage threshold and writes one TSV per gene as soon as that gene finishes.
 - Writes rare variant rows only, with participant genotype plus `AF`, `AC`, and `AN` in each per-gene TSV.
 - Merges nearby genes into shared fetch windows so each shard is queried fewer times.
+- `5_prepare_double_het_phasing_tsv.py` expands the double-het summary into pairwise variant rows and joins sample-specific file paths for phasing.
 
 ## Suggested layout on CloudOS
 
@@ -77,6 +78,24 @@ python scripts/4_find_double_het_vars.py \
   --out outputs/snorna_biallelic.two_rare_same_snoRNA.tsv
 ```
 
+To prepare those double-het rows for phasing with `phasing/scripts/phase_nearby_variants.py`, run:
+
+```bash
+python scripts/5_prepare_double_het_phasing_tsv.py \
+  --double-het-tsv outputs/snorna_biallelic.two_rare_same_snoRNA.tsv \
+  --filepath-details filepath_details.tsv \
+  --reference-path reference.fa \
+  --out outputs/snorna_biallelic.double_het_for_phasing.tsv
+```
+
+The `filepath_details.tsv` file must contain `platekey`, `bam`, `vcf`, `father_bam`, `mother_bam`, `father_vcf`, `mother_vcf`, `father_sample`, and `mother_sample` columns. The output TSV can be passed directly to `phase_nearby_variants.py` with `--pairs-tsv`.
+
+```bash
+python ../phasing/scripts/phase_nearby_variants.py \
+  --pairs-tsv outputs/snorna_biallelic.double_het_for_phasing.tsv \
+  --out outputs/snorna_biallelic.double_het_phasing_results.tsv
+```
+
 If you run script 2 and your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
 
 Script 2 prints progress as it loads genes, queues each shard, and reports each shard as it finishes.
@@ -84,7 +103,7 @@ It prefers `cyvcf2` for indexed region fetches when available, then falls back t
 
 ## Participant TSV
 
-The participant table is not needed by scripts 1 to 4 unless you want to filter script 2 to a case/control subset. In that case, use the `participant_id` to `platekey` map plus one plain-text ID file per group.
+The participant table is not needed by scripts 1 to 5 unless you want to filter script 2 to a case/control subset. In that case, use the `participant_id` to `platekey` map plus one plain-text ID file per group.
 
 ## Notes
 
