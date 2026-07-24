@@ -88,7 +88,6 @@ def main():
                 rows.append(
                     {
                         "sample": details.get("sample", sample),
-                        "platekey": sample,
                         "gene_name": row["gene_name"],
                         "gene_id": row["gene_id"],
                         "chrom": chrom1,
@@ -115,7 +114,6 @@ def main():
 
     fieldnames = [
         "sample",
-        "platekey",
         "gene_name",
         "gene_id",
         "chrom",
