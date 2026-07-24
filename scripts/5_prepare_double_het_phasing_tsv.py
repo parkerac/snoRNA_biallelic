@@ -22,7 +22,7 @@ def load_filepath_details(path):
     with open(path, newline="") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         required = {
-            "platekey",
+            "sample",
             "bam",
             "vcf",
             "father_bam",
@@ -36,7 +36,7 @@ def load_filepath_details(path):
         if missing:
             raise ValueError(f"{path} is missing columns: {', '.join(sorted(missing))}")
         for row in reader:
-            details[row["platekey"]] = row
+            details[row["sample"]] = row
     return details
 
 
@@ -48,14 +48,14 @@ def parse_variant(value):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--double-het-tsv", required=True, help="TSV from script 4")
-    parser.add_argument("--filepath-details", required=True, help="TSV with platekey and family filepath columns")
+    parser.add_argument("--filepath-details", required=True, help="TSV with sample and family filepath columns")
     parser.add_argument("--reference-path", required=True, help="Reference FASTA path to add to every row")
     parser.add_argument("--out", required=True, help="Output TSV for phase_nearby_variants.py")
     args = parser.parse_args()
 
     filepath_details = load_filepath_details(args.filepath_details)
     rows = []
-    missing_platekeys = set()
+    missing_samples = set()
 
     with open(args.double_het_tsv, newline="") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
@@ -65,15 +65,15 @@ def main():
             raise ValueError(f"{args.double_het_tsv} is missing columns: {', '.join(sorted(missing))}")
 
         for row in reader:
-            platekey = row["platekey"]
-            if platekey not in filepath_details:
-                missing_platekeys.add(platekey)
+            sample = row["platekey"]
+            if sample not in filepath_details:
+                missing_samples.add(sample)
                 continue
 
             variants = parse_list(row.get("variants"))
             genotypes = parse_list(row.get("genotypes"))
             if len(variants) != len(genotypes):
-                raise ValueError(f"{args.double_het_tsv} has mismatched variants/genotypes for platekey {platekey}")
+                raise ValueError(f"{args.double_het_tsv} has mismatched variants/genotypes for platekey {sample}")
 
             het_variants = [(variant, genotype) for variant, genotype in zip(variants, genotypes) if is_heterozygous_alt(genotype)]
             if len(het_variants) < 2:
@@ -84,11 +84,11 @@ def main():
                 chrom2, pos2, ref2, alt2 = parse_variant(variant2)
                 if chrom1 != chrom2:
                     continue
-                details = filepath_details[platekey]
+                details = filepath_details[sample]
                 rows.append(
                     {
-                        "sample": platekey,
-                        "platekey": platekey,
+                        "sample": details.get("sample", sample),
+                        "platekey": sample,
                         "gene_name": row["gene_name"],
                         "gene_id": row["gene_id"],
                         "chrom": chrom1,
@@ -110,8 +110,8 @@ def main():
                     }
                 )
 
-    if missing_platekeys:
-        print(f"Warning: {len(missing_platekeys)} platekeys were not found in {args.filepath_details}", flush=True)
+    if missing_samples:
+        print(f"Warning: {len(missing_samples)} samples were not found in {args.filepath_details}", flush=True)
 
     fieldnames = [
         "sample",
