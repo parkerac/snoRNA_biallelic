@@ -34,7 +34,7 @@ python scripts/1_calculate_coverage_score.py \
 ```
 
 This uses cohort `MEDIAN_DP` from the site-QC VCF records that overlap each interval, so it is a proxy coverage score rather than a true base-wise depth track.
-If you set `--feature-type tRNA`, the script includes both tRNAs and tRNA pseudogenes.
+If you set `--feature-type tRNA` and point the script at a tRNA-only GTF, it will use every entry in that GTF.
 
 Interpretation:
 

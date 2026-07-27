@@ -22,16 +22,11 @@ def open_text(path):
 
 def gene_type_matches(gene_type, wanted):
     gene_type_lc = str(gene_type).lower()
+    if wanted == {"trna"}:
+        return True
     if gene_type_lc in wanted:
         return True
-    if "trna" not in wanted:
-        return False
-    return gene_type_lc in {
-        "pseudo_trna",
-        "trna_pseudogene",
-        "trna_pseudogene_nuclear",
-        "trna_pseudogene_mitochondrial",
-    } or gene_type_lc.endswith("_trna")
+    return False
 
 
 def parse_gtf(path, feature_types):
