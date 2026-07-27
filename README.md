@@ -22,10 +22,10 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 
 ## Coverage First
 
-To calculate a coverage score per snoRNA from the AGGV3 site-QC VCFs, run:
+To calculate a coverage score per RNA feature type from the AGGV3 site-QC VCFs, run:
 
 ```bash
-python scripts/1_calculate_snoRNA_coverage_score.py \
+python scripts/1_calculate_coverage_score.py \
   --gtf annotations.gtf.gz \
   --shard-bed biallelic_shards.bed \
   --site-qc-root site_qc_vcfs \
@@ -33,7 +33,8 @@ python scripts/1_calculate_snoRNA_coverage_score.py \
   --out outputs/snorna_biallelic.coverage_score.tsv
 ```
 
-This uses cohort `MEDIAN_DP` from the site-QC VCF records that overlap each snoRNA interval, so it is a proxy coverage score rather than a true base-wise depth track.
+This uses cohort `MEDIAN_DP` from the site-QC VCF records that overlap each interval, so it is a proxy coverage score rather than a true base-wise depth track.
+If you set `--feature-type tRNA`, the script includes both tRNAs and tRNA pseudogenes.
 
 Interpretation:
 

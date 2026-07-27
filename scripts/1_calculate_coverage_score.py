@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Estimate snoRNA coverage from AGGV3 site-QC VCFs using cohort MEDIAN_DP."""
+"""Estimate RNA coverage from AGGV3 site-QC VCFs using cohort MEDIAN_DP."""
 
 import argparse
 import csv
@@ -18,6 +18,20 @@ except Exception:  # pragma: no cover
 
 def open_text(path):
     return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path)
+
+
+def gene_type_matches(gene_type, wanted):
+    gene_type_lc = str(gene_type).lower()
+    if gene_type_lc in wanted:
+        return True
+    if "trna" not in wanted:
+        return False
+    return gene_type_lc in {
+        "pseudo_trna",
+        "trna_pseudogene",
+        "trna_pseudogene_nuclear",
+        "trna_pseudogene_mitochondrial",
+    } or gene_type_lc.endswith("_trna")
 
 
 def parse_gtf(path, feature_types):
@@ -42,7 +56,7 @@ def parse_gtf(path, feature_types):
             gene_type = (attr_map.get("gene_type") or attr_map.get("gene_biotype") or "").strip()
             if feature not in {"gene", "transcript"}:
                 continue
-            if gene_type.lower() not in wanted:
+            if not gene_type_matches(gene_type, wanted):
                 continue
             gene = {
                 "gene_name": attr_map.get("gene_name", "UNKNOWN"),
@@ -336,7 +350,7 @@ def process_shard(task):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--gtf", help="GTF containing snoRNA gene annotations")
+    parser.add_argument("--gtf", help="GTF containing RNA gene annotations")
     parser.add_argument("--gene-summary", help="gene_summary.tsv from script 1")
     parser.add_argument("--feature-type", default=None, help="RNA feature type to keep; defaults to snoRNA")
     parser.add_argument("--shard-bed", required=True, help="biallelic_shards.bed")
