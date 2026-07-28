@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 GNOMAD_API_URL = "https://gnomad.broadinstitute.org/api"
 DEFAULT_DATASET = "gnomad_r4"
-DEFAULT_BATCH_SIZE = 10
+DEFAULT_BATCH_SIZE = 25
 DEFAULT_WORKERS = 8
 DEFAULT_SLEEP_SECONDS = 6
 DEFAULT_RETRIES = 3
@@ -46,6 +46,10 @@ def normalize_variant_id(value):
     if chrom.upper() in {"MT", "M"}:
         chrom = "M"
     return f"{chrom}-{int(pos)}-{ref.upper()}-{alt.upper()}"
+
+
+def split_variant_values(value):
+    return [item.strip() for item in str(value).split(";") if item.strip()]
 
 
 def build_query(batch, dataset):
@@ -159,7 +163,7 @@ def parse_variant_result(payload, fallback_id):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-tsv", required=True, help="Input TSV containing a variant column")
-    parser.add_argument("--variant-column", default="variant_id", help="Column containing chr:pos:ref:alt variant IDs")
+    parser.add_argument("--variant-column", default="variant_id", help="Column containing chr:pos:ref:alt variant IDs, optionally semicolon-separated")
     parser.add_argument("--out", required=True, help="Annotated output TSV path")
     parser.add_argument("--dataset", default=DEFAULT_DATASET, help="gnomAD dataset id, for example gnomad_r4")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Number of unique variants to query per gnomAD request")
@@ -180,11 +184,14 @@ def main():
     unique_variants = []
     seen = set()
     for row in rows:
-        variant_id = normalize_variant_id(row[args.variant_column])
-        normalized_by_row.append(variant_id)
-        if variant_id not in seen:
-            seen.add(variant_id)
-            unique_variants.append(variant_id)
+        variant_ids = [normalize_variant_id(value) for value in split_variant_values(row[args.variant_column])]
+        if not variant_ids:
+            raise ValueError(f"row is missing a variant in column {args.variant_column!r}")
+        normalized_by_row.append(variant_ids)
+        for variant_id in variant_ids:
+            if variant_id not in seen:
+                seen.add(variant_id)
+                unique_variants.append(variant_id)
 
     print(f"Loaded {len(rows)} rows with {len(unique_variants)} unique variants", flush=True)
 
@@ -208,9 +215,16 @@ def main():
     with open(args.out, "w", newline="") as out_fh:
         writer = csv.DictWriter(out_fh, delimiter="\t", fieldnames=output_fields)
         writer.writeheader()
-        for row, variant_id in zip(rows, normalized_by_row):
-            ann = annotations[variant_id]
-            writer.writerow({**row, **ann})
+        for row, variant_ids in zip(rows, normalized_by_row):
+            anns = [annotations[variant_id] for variant_id in variant_ids]
+            output_row = dict(row)
+            output_row["gnomad_variant_id"] = ";".join(ann["gnomad_variant_id"] for ann in anns)
+            output_row["gnomad_ac"] = ";".join(str(ann["gnomad_ac"]) for ann in anns)
+            output_row["gnomad_an"] = ";".join(str(ann["gnomad_an"]) for ann in anns)
+            output_row["gnomad_af"] = ";".join(str(ann["gnomad_af"]) for ann in anns)
+            output_row["gnomad_nhomalt"] = ";".join(str(ann["gnomad_nhomalt"]) for ann in anns)
+            output_row["gnomad_lookup_status"] = ";".join(ann["gnomad_lookup_status"] for ann in anns)
+            writer.writerow(output_row)
 
     print(f"Wrote annotated TSV to {args.out}", flush=True)
 
