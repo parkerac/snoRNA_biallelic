@@ -6,6 +6,7 @@ import csv
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -13,6 +14,7 @@ from urllib.request import Request, urlopen
 GNOMAD_API_URL = "https://gnomad.broadinstitute.org/api"
 DEFAULT_DATASET = "gnomad_r4"
 DEFAULT_BATCH_SIZE = 10
+DEFAULT_WORKERS = 8
 DEFAULT_SLEEP_SECONDS = 6
 DEFAULT_RETRIES = 3
 MAX_GRAPHQL_BATCH = 25
@@ -123,6 +125,11 @@ def query_batch(api_url, dataset, batch, retries, sleep_seconds):
     return left
 
 
+def chunked(values, size):
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
+
+
 def parse_variant_result(payload, fallback_id):
     if not payload or payload.get("variant") is None:
         return {
@@ -156,6 +163,7 @@ def main():
     parser.add_argument("--out", required=True, help="Annotated output TSV path")
     parser.add_argument("--dataset", default=DEFAULT_DATASET, help="gnomAD dataset id, for example gnomad_r4")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Number of unique variants to query per gnomAD request")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Number of query batches to run in parallel")
     parser.add_argument("--sleep-seconds", type=float, default=DEFAULT_SLEEP_SECONDS, help="Seconds to wait between failed retries")
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Retry count for gnomAD requests")
     parser.add_argument("--api-url", default=GNOMAD_API_URL, help="gnomAD GraphQL endpoint")
@@ -180,11 +188,20 @@ def main():
 
     print(f"Loaded {len(rows)} rows with {len(unique_variants)} unique variants", flush=True)
 
+    batches = list(chunked(unique_variants, args.batch_size))
+    workers = max(1, min(args.workers, len(batches) or 1))
+    print(f"Querying gnomAD in {len(batches)} batches with {workers} workers", flush=True)
+
     annotations = {}
-    for start in range(0, len(unique_variants), args.batch_size):
-        batch = unique_variants[start : start + args.batch_size]
-        print(f"Querying gnomAD for variants {start + 1}-{start + len(batch)} of {len(unique_variants)}", flush=True)
-        annotations.update(query_batch(args.api_url, args.dataset, batch, args.retries, args.sleep_seconds))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        future_to_batch = {
+            pool.submit(query_batch, args.api_url, args.dataset, batch, args.retries, args.sleep_seconds): (i, batch)
+            for i, batch in enumerate(batches, start=1)
+        }
+        for future in as_completed(future_to_batch):
+            batch_index, batch = future_to_batch[future]
+            print(f"Finished gnomAD batch {batch_index}/{len(batches)}", flush=True)
+            annotations.update(future.result())
 
     output_fields = fieldnames + ["gnomad_variant_id", "gnomad_ac", "gnomad_an", "gnomad_af", "gnomad_nhomalt", "gnomad_lookup_status"]
 
