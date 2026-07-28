@@ -118,6 +118,7 @@ def query_batch(api_url, dataset, batch, retries, sleep_seconds):
                 "gnomad_ac": 0,
                 "gnomad_an": 0,
                 "gnomad_af": 0.0,
+                "gnomad_nhomalt": 0,
                 "gnomad_lookup_status": f"error:{last_error}" if last_error else "error",
             }
         }
@@ -141,6 +142,7 @@ def parse_variant_result(payload, fallback_id):
             "gnomad_ac": 0,
             "gnomad_an": 0,
             "gnomad_af": 0.0,
+            "gnomad_nhomalt": 0,
             "gnomad_lookup_status": "not_found",
         }
     variant = payload["variant"]
