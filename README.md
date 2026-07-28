@@ -81,6 +81,17 @@ python scripts/4_find_het_vars.py \
 
 This also writes `outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.tsv` unless you override `--all-het-out`.
 
+To annotate a variant TSV with gnomAD frequency and homozygote count, run:
+
+```bash
+python scripts/6_annotate_variants_with_gnomad.py \
+  --input-tsv outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.tsv \
+  --variant-column variant_id \
+  --out outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.gnomad.tsv
+```
+
+This queries each unique variant only once and adds gnomAD `ac`, `an`, `af`, and `nhomalt` columns. The default dataset is `gnomad_r4`; use another `--dataset` if you need a different gnomAD release.
+
 To prepare those double-het rows for phasing with `phasing/scripts/phase_nearby_variants.py`, run:
 
 ```bash
