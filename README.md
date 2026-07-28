@@ -74,10 +74,12 @@ python scripts/3_find_hom_vars.py \
 To find participants with at least two rare heterozygous variants in the same snoRNA, run:
 
 ```bash
-python scripts/4_find_double_het_vars.py \
+python scripts/4_find_het_vars.py \
   --genes-dir outputs/snorna_biallelic.genes \
   --out outputs/snorna_biallelic.two_rare_same_snoRNA.tsv
 ```
+
+This also writes `outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.tsv` unless you override `--all-het-out`.
 
 To prepare those double-het rows for phasing with `phasing/scripts/phase_nearby_variants.py`, run:
 
