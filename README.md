@@ -12,6 +12,8 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 - Writes rare variant rows only, with participant genotype plus `AF`, `AC`, and `AN` in each per-gene TSV.
 - Merges nearby genes into shared fetch windows so each shard is queried fewer times.
 - `5_prepare_double_het_phasing_tsv.py` expands the double-het summary into pairwise variant rows and joins sample-specific file paths for phasing.
+- `6_phase_nearby_variants.py` phases those pairwise variant rows from local BAM/CRAM evidence.
+- `7_annotate_variants_with_gnomad.py` adds gnomAD `ac`, `an`, `af`, and `nhomalt` annotations to a variant TSV.
 
 ## Suggested layout on CloudOS
 
@@ -84,7 +86,7 @@ This also writes `outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.tsv` unl
 To annotate a variant TSV with gnomAD frequency and homozygote count, run:
 
 ```bash
-python scripts/6_annotate_variants_with_gnomad.py \
+python scripts/7_annotate_variants_with_gnomad.py \
   --input-tsv outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.tsv \
   --variant-column variant_id \
   --out outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.gnomad.tsv \
@@ -93,7 +95,7 @@ python scripts/6_annotate_variants_with_gnomad.py \
 
 This queries each unique variant only once, runs batches in parallel, and adds gnomAD `ac`, `an`, `af`, and `nhomalt` columns. If the input variant column contains semicolon-separated variants, the output gnomAD columns will use the same semicolon-separated structure. The default dataset is `gnomad_r4`; use another `--dataset` if you need a different gnomAD release.
 
-To prepare those double-het rows for phasing with `phasing/scripts/phase_nearby_variants.py`, run:
+To prepare those double-het rows for phasing with the local script, run:
 
 ```bash
 python scripts/5_prepare_double_het_phasing_tsv.py \
@@ -106,7 +108,7 @@ python scripts/5_prepare_double_het_phasing_tsv.py \
 The `filepath_details.tsv` file must be a TSV with `sample`, `bam`, `vcf`, `father_bam`, `mother_bam`, `father_vcf`, `mother_vcf`, `father_sample`, and `mother_sample` columns. The output TSV can be passed directly to `phase_nearby_variants.py` with `--pairs-tsv`.
 
 ```bash
-python ../phasing/scripts/phase_nearby_variants.py \
+python scripts/6_phase_nearby_variants.py \
   --pairs-tsv outputs/snorna_biallelic.double_het_for_phasing.tsv \
   --out outputs/snorna_biallelic.double_het_phasing_results.tsv
 ```
