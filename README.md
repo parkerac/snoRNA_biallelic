@@ -14,6 +14,7 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 - `5_prepare_double_het_phasing_tsv.py` expands the double-het summary into pairwise variant rows and joins sample-specific file paths for phasing.
 - `6_phase_nearby_variants.py` phases those pairwise variant rows from local BAM/CRAM evidence.
 - `7_annotate_variants_with_gnomad.py` adds gnomAD `ac`, `an`, `af`, and `nhomalt` annotations to a variant TSV.
+- `8_annotate_single_variant_inheritance.py` labels a single candidate variant as `inherited`, `de_novo`, or `uncertain`.
 
 ## Suggested layout on CloudOS
 
@@ -112,6 +113,16 @@ python scripts/6_phase_nearby_variants.py \
   --pairs-tsv outputs/snorna_biallelic.double_het_for_phasing.tsv \
   --out outputs/snorna_biallelic.double_het_phasing_results.tsv
 ```
+
+To annotate a single candidate variant for inheritance, run:
+
+```bash
+python scripts/8_annotate_single_variant_inheritance.py \
+  --input-tsv outputs/single_variant_candidates.tsv \
+  --out outputs/single_variant_candidates.inheritance.tsv
+```
+
+The input TSV can provide a `variant_id` column in `chrom:pos:ref:alt` format, or separate `chrom`, `pos`, `ref`, and `alt` columns. If the TSV also includes `vcf`, `sample`, `mother_vcf`, `mother_sample`, `father_vcf`, and `father_sample` columns, the script will use them to confirm the child and parental genotypes before assigning the label.
 
 If you run script 2 and your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
 
