@@ -6,6 +6,7 @@ import csv
 import json
 import re
 import time
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -18,6 +19,16 @@ DEFAULT_WORKERS = 8
 DEFAULT_SLEEP_SECONDS = 6
 DEFAULT_RETRIES = 3
 MAX_GRAPHQL_BATCH = 25
+
+
+def configure_ssl_certs():
+    try:
+        import certifi
+    except ImportError:
+        return
+    bundle = certifi.where()
+    os.environ.setdefault("SSL_CERT_FILE", bundle)
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", bundle)
 
 
 def scalar_int(value):
@@ -163,6 +174,7 @@ def parse_variant_result(payload, fallback_id):
 
 
 def main():
+    configure_ssl_certs()
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-tsv", required=True, help="Input TSV containing a variant column")
     parser.add_argument("--variant-column", default="variant_id", help="Column containing chr:pos:ref:alt variant IDs, optionally semicolon-separated")
