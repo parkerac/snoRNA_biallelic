@@ -88,15 +88,11 @@ def status_for_vcf(vcf_path, sample, variant):
         return "ambiguous" if saw_record else "no_record"
 
 
-def classify_inheritance(child_status, mother_status, father_status):
-    if child_status not in {"has_alt", "assumed_present"}:
-        return "uncertain", "child_not_confirmed"
-    if mother_status == "has_alt" and father_status == "no_alt":
-        return "inherited", "maternal"
-    if father_status == "has_alt" and mother_status == "no_alt":
-        return "inherited", "paternal"
+def classify_inheritance(mother_status, father_status):
+    if mother_status == "has_alt" or father_status == "has_alt":
+        return "inherited", "parent_carrier"
     if mother_status == "no_alt" and father_status == "no_alt":
-        return "de_novo", "neither_parent_has_alt"
+        return "de_novo", "neither_parent_carries_variant"
     return "uncertain", "parental_evidence_inconclusive"
 
 
@@ -147,32 +143,26 @@ def main():
         rows = []
         for row in reader:
             variants = variant_from_row(row, args.variant_column)
-            child_statuses = []
             mother_statuses = []
             father_statuses = []
             annotations = []
             details = []
             for variant in variants:
-                child_status = status_for_vcf(row_value(row, args.vcf_column), row_value(row, args.sample_column), variant)
-                if not row_value(row, args.vcf_column):
-                    child_status = "assumed_present"
                 mother_status = status_for_vcf(row_value(row, args.mother_vcf_column), row_value(row, args.mother_sample_column), variant)
                 father_status = status_for_vcf(row_value(row, args.father_vcf_column), row_value(row, args.father_sample_column), variant)
-                annotation, detail = classify_inheritance(child_status, mother_status, father_status)
-                child_statuses.append(child_status)
+                annotation, detail = classify_inheritance(mother_status, father_status)
                 mother_statuses.append(mother_status)
                 father_statuses.append(father_status)
                 annotations.append(annotation)
                 details.append(detail)
             row[args.annotation_column] = ";".join(annotations)
             row[args.detail_column] = ";".join(details)
-            row["child_status"] = ";".join(child_statuses)
             row["mother_status"] = ";".join(mother_statuses)
             row["father_status"] = ";".join(father_statuses)
             rows.append(row)
 
     fieldnames = list(rows[0].keys()) if rows else list(reader.fieldnames or [])
-    for extra in (args.annotation_column, args.detail_column, "child_status", "mother_status", "father_status"):
+    for extra in (args.annotation_column, args.detail_column, "mother_status", "father_status"):
         if extra not in fieldnames:
             fieldnames.append(extra)
 
