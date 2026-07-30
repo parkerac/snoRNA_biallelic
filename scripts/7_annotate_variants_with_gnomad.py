@@ -7,6 +7,7 @@ import json
 import re
 import time
 import os
+import ssl
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -19,6 +20,7 @@ DEFAULT_WORKERS = 8
 DEFAULT_SLEEP_SECONDS = 6
 DEFAULT_RETRIES = 3
 MAX_GRAPHQL_BATCH = 25
+SSL_CONTEXT = ssl.create_default_context()
 
 
 def configure_ssl_certs():
@@ -29,6 +31,8 @@ def configure_ssl_certs():
     bundle = certifi.where()
     os.environ.setdefault("SSL_CERT_FILE", bundle)
     os.environ.setdefault("REQUESTS_CA_BUNDLE", bundle)
+    global SSL_CONTEXT
+    SSL_CONTEXT = ssl.create_default_context(cafile=bundle)
 
 
 def scalar_int(value):
@@ -85,7 +89,7 @@ def post_query(api_url, query, dataset):
             "User-Agent": "Mozilla/5.0",
         },
     )
-    with urlopen(request) as response:
+    with urlopen(request, context=SSL_CONTEXT) as response:
         return json.loads(response.read().decode())
 
 
