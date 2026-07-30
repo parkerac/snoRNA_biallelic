@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Annotate a single variant as inherited, de novo, or uncertain using family VCFs."""
+"""Annotate one or more variants as inherited, de novo, or uncertain using family VCFs."""
 
 import argparse
 import csv
@@ -13,6 +13,10 @@ pysam = None
 def parse_variant(value):
     chrom, pos, ref, alt = value.replace(",", ":").split(":")
     return chrom, int(pos), ref.upper(), alt.upper()
+
+
+def split_variant_values(value):
+    return [item.strip() for item in str(value).split(";") if item.strip()]
 
 
 def contig_aliases(chrom):
@@ -106,17 +110,17 @@ def row_value(row, key):
 
 def variant_from_row(row, variant_column):
     if variant_column and row_value(row, variant_column):
-        return parse_variant(row_value(row, variant_column))
+        return [parse_variant(value) for value in split_variant_values(row_value(row, variant_column))]
     required = ("chrom", "pos", "ref", "alt")
     if all(row_value(row, key) for key in required):
-        return row_value(row, "chrom"), int(row_value(row, "pos")), row_value(row, "ref").upper(), row_value(row, "alt").upper()
+        return [(row_value(row, "chrom"), int(row_value(row, "pos")), row_value(row, "ref").upper(), row_value(row, "alt").upper())]
     raise ValueError(f"Could not find a variant in column {variant_column or 'variant_id'} or chrom/pos/ref/alt fields")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-tsv", required=True, help="TSV with a single variant per row")
-    parser.add_argument("--variant-column", default="variant_id", help="Variant column in chrom:pos:ref:alt format")
+    parser.add_argument("--input-tsv", required=True, help="TSV with one or more variants per row")
+    parser.add_argument("--variant-column", default="variant_id", help="Variant column in chrom:pos:ref:alt format, optionally semicolon-separated")
     parser.add_argument("--sample-column", default="sample", help="Proband sample column in the proband VCF")
     parser.add_argument("--vcf-column", default="vcf", help="Proband VCF column used to confirm the variant is present")
     parser.add_argument("--mother-vcf-column", default="mother_vcf", help="Mother VCF column")
@@ -142,18 +146,29 @@ def main():
             raise SystemExit(f"{args.input_tsv} has no header")
         rows = []
         for row in reader:
-            variant = variant_from_row(row, args.variant_column)
-            child_status = status_for_vcf(row_value(row, args.vcf_column), row_value(row, args.sample_column), variant)
-            if not row_value(row, args.vcf_column):
-                child_status = "assumed_present"
-            mother_status = status_for_vcf(row_value(row, args.mother_vcf_column), row_value(row, args.mother_sample_column), variant)
-            father_status = status_for_vcf(row_value(row, args.father_vcf_column), row_value(row, args.father_sample_column), variant)
-            annotation, detail = classify_inheritance(child_status, mother_status, father_status)
-            row[args.annotation_column] = annotation
-            row[args.detail_column] = detail
-            row["child_status"] = child_status
-            row["mother_status"] = mother_status
-            row["father_status"] = father_status
+            variants = variant_from_row(row, args.variant_column)
+            child_statuses = []
+            mother_statuses = []
+            father_statuses = []
+            annotations = []
+            details = []
+            for variant in variants:
+                child_status = status_for_vcf(row_value(row, args.vcf_column), row_value(row, args.sample_column), variant)
+                if not row_value(row, args.vcf_column):
+                    child_status = "assumed_present"
+                mother_status = status_for_vcf(row_value(row, args.mother_vcf_column), row_value(row, args.mother_sample_column), variant)
+                father_status = status_for_vcf(row_value(row, args.father_vcf_column), row_value(row, args.father_sample_column), variant)
+                annotation, detail = classify_inheritance(child_status, mother_status, father_status)
+                child_statuses.append(child_status)
+                mother_statuses.append(mother_status)
+                father_statuses.append(father_status)
+                annotations.append(annotation)
+                details.append(detail)
+            row[args.annotation_column] = ";".join(annotations)
+            row[args.detail_column] = ";".join(details)
+            row["child_status"] = ";".join(child_statuses)
+            row["mother_status"] = ";".join(mother_statuses)
+            row["father_status"] = ";".join(father_statuses)
             rows.append(row)
 
     fieldnames = list(rows[0].keys()) if rows else list(reader.fieldnames or [])
