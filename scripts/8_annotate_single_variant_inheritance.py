@@ -362,16 +362,22 @@ def classify_origin_hint(index, variants, mother_statuses, father_statuses, wind
     if fragments:
         origins = [parent_origin_from_statuses(m, f) for m, f in zip(mother_statuses, father_statuses)]
         for calls in fragments.values():
-            if index not in calls:
-                continue
+            same_fragment = index in calls
+            fragment_maternal = fragment_paternal = False
             for j in calls:
                 if j == index or variants[j][0] != chrom or abs(variants[j][1] - pos) > window:
                     continue
                 origin = origins[j]
                 if origin == "maternal":
-                    maternal += 1
+                    fragment_maternal = True
                 elif origin == "paternal":
-                    paternal += 1
+                    fragment_paternal = True
+            if same_fragment:
+                maternal += int(fragment_maternal)
+                paternal += int(fragment_paternal)
+            else:
+                maternal += int(fragment_paternal)
+                paternal += int(fragment_maternal)
     else:
         for j, other in enumerate(variants):
             if j == index or other[0] != chrom or abs(other[1] - pos) > window:
