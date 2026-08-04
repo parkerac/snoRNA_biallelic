@@ -14,10 +14,16 @@ DEFAULT_THREADS = 8
 DEFAULT_ORIGIN_WINDOW = 5000
 DEFAULT_MIN_MAPQ = 20
 DEFAULT_MIN_BASEQ = 20
+DEFAULT_MIN_PARENT_BAM_DEPTH = 8
+DEFAULT_MIN_PARENT_BAM_ALT_DEPTH = 3
+DEFAULT_MIN_PARENT_BAM_ALT_FRAC = 0.2
+DEFAULT_MAX_PARENT_BAM_ALT_DEPTH_FOR_REF = 1
+DEFAULT_MAX_PARENT_BAM_ALT_FRAC_FOR_REF = 0.05
 pysam = None
 TABIX_CACHE = {}
 VCF_STATUS_CACHE = {}
 FRAGMENTS_CACHE = {}
+PARENT_BAM_STATUS_CACHE = {}
 
 
 def parse_variant(value):
@@ -121,6 +127,80 @@ def is_cram(path):
 
 def cached_reference(reference):
     return os.path.realpath(reference) if reference else None
+
+
+def combine_status(vcf_status, bam_status):
+    for status in ("has_alt", "no_alt", "ambiguous", "low_depth", "missing_sample", "missing_reference", "missing_file", "no_record", "missing"):
+        if vcf_status == status or bam_status == status:
+            return status
+    return vcf_status or bam_status or "missing"
+
+
+def count_parent_bam_variant(bam_path, reference, variant, args):
+    counts = {"ref": 0, "alt": 0}
+    if not bam_path:
+        counts["status"] = "missing"
+        return counts
+    if not os.path.exists(bam_path):
+        counts["status"] = "missing_file"
+        return counts
+    if is_cram(bam_path) and not reference:
+        counts["status"] = "missing_reference"
+        return counts
+    reference = cached_reference(reference)
+    bam = pysam.AlignmentFile(bam_path, "rc" if is_cram(bam_path) else "rb", reference_filename=reference)
+    try:
+        fetch_chrom = resolve_contig(bam, variant[0])
+        for read in bam.fetch(fetch_chrom, max(0, variant[1] - 2), variant[1] + len(variant[2]) + 1):
+            if read.mapping_quality < args.min_mapq or read.is_secondary or read.is_supplementary or read.is_qcfail:
+                continue
+            if read.is_duplicate and not args.include_duplicates:
+                continue
+            call = call_variant(read, variant, args.min_baseq)
+            if call:
+                counts["alt" if call[0] else "ref"] += 1
+    finally:
+        bam.close()
+    depth = counts["ref"] + counts["alt"]
+    alt_frac = counts["alt"] / depth if depth else 0.0
+    counts["depth"] = depth
+    counts["alt_frac"] = round(alt_frac, 4)
+    if depth < args.min_parent_bam_depth:
+        counts["status"] = "low_depth"
+    elif counts["alt"] >= args.min_parent_bam_alt_depth and alt_frac >= args.min_parent_bam_alt_frac:
+        counts["status"] = "has_alt"
+    elif counts["alt"] <= args.max_parent_bam_alt_depth_for_ref and alt_frac <= args.max_parent_bam_alt_frac_for_ref:
+        counts["status"] = "no_alt"
+    else:
+        counts["status"] = "ambiguous"
+    return counts
+
+
+def statuses_for_bam(bam_path, reference, variants, args):
+    if not bam_path:
+        return ["missing"] * len(variants)
+    if not os.path.exists(bam_path):
+        return ["missing_file"] * len(variants)
+    key = (
+        bam_path,
+        reference,
+        tuple(variants),
+        args.min_mapq,
+        args.min_baseq,
+        args.include_duplicates,
+        args.min_parent_bam_depth,
+        args.min_parent_bam_alt_depth,
+        args.min_parent_bam_alt_frac,
+        args.max_parent_bam_alt_depth_for_ref,
+        args.max_parent_bam_alt_frac_for_ref,
+    )
+    if key not in PARENT_BAM_STATUS_CACHE:
+        PARENT_BAM_STATUS_CACHE[key] = [count_parent_bam_variant(bam_path, reference, variant, args)["status"] for variant in variants]
+    return PARENT_BAM_STATUS_CACHE[key]
+
+
+def combined_parent_statuses(vcf_statuses, bam_statuses):
+    return [combine_status(v, b) for v, b in zip(vcf_statuses, bam_statuses)]
 
 
 def add_call(fragment, variant_index, allele, quality):
@@ -359,6 +439,8 @@ def main():
     parser.add_argument("--father-vcf-column", default="father_vcf", help="Father VCF column")
     parser.add_argument("--mother-sample-column", default="mother_sample", help="Mother sample column")
     parser.add_argument("--father-sample-column", default="father_sample", help="Father sample column")
+    parser.add_argument("--mother-bam-column", default="mother_bam", help="Mother BAM/CRAM column")
+    parser.add_argument("--father-bam-column", default="father_bam", help="Father BAM/CRAM column")
     parser.add_argument("--out", required=True, help="Output TSV with inheritance annotation")
     parser.add_argument("--annotation-column", default="inheritance_annotation", help="Name of the output annotation column")
     parser.add_argument("--detail-column", default="inheritance_detail", help="Name of the output detail column")
@@ -367,6 +449,11 @@ def main():
     parser.add_argument("--threads", type=int, default=DEFAULT_THREADS, help="Number of worker threads")
     parser.add_argument("--min-mapq", type=int, default=DEFAULT_MIN_MAPQ, help="Minimum MAPQ for read-backed BAM calls")
     parser.add_argument("--min-baseq", type=int, default=DEFAULT_MIN_BASEQ, help="Minimum base quality for read-backed BAM calls")
+    parser.add_argument("--min-parent-bam-depth", type=int, default=DEFAULT_MIN_PARENT_BAM_DEPTH, help="Minimum depth for parent BAM support")
+    parser.add_argument("--min-parent-bam-alt-depth", type=int, default=DEFAULT_MIN_PARENT_BAM_ALT_DEPTH, help="Minimum alt-supporting reads in a parent BAM to call has_alt")
+    parser.add_argument("--min-parent-bam-alt-frac", type=float, default=DEFAULT_MIN_PARENT_BAM_ALT_FRAC, help="Minimum alt fraction in a parent BAM to call has_alt")
+    parser.add_argument("--max-parent-bam-alt-depth-for-ref", type=int, default=DEFAULT_MAX_PARENT_BAM_ALT_DEPTH_FOR_REF, help="Maximum alt-supporting reads in a parent BAM to call no_alt")
+    parser.add_argument("--max-parent-bam-alt-frac-for-ref", type=float, default=DEFAULT_MAX_PARENT_BAM_ALT_FRAC_FOR_REF, help="Maximum alt fraction in a parent BAM to call no_alt")
     parser.add_argument("--include-duplicates", action="store_true", help="Include duplicate reads in BAM evidence")
     args = parser.parse_args()
 
@@ -397,8 +484,10 @@ def main():
             row_value(row, args.reference_column),
             row_value(row, args.mother_vcf_column),
             row_value(row, args.mother_sample_column),
+            row_value(row, args.mother_bam_column),
             row_value(row, args.father_vcf_column),
             row_value(row, args.father_sample_column),
+            row_value(row, args.father_bam_column),
         )
         if key not in groups:
             groups[key] = []
@@ -411,15 +500,19 @@ def main():
         row_variants = [(row_index, row, variant_from_row(row, args.variant_column)) for row_index, row in grouped_rows]
         all_variants = unique_variants([variant for _, _, variants in row_variants for variant in variants])
         sample_bam, reference = key[1], key[2]
-        mother_vcf, mother_sample = key[3], key[4]
-        father_vcf, father_sample = key[5], key[6]
-        mother_statuses = statuses_for_vcf(mother_vcf, mother_sample, all_variants)
-        father_statuses = statuses_for_vcf(father_vcf, father_sample, all_variants)
+        mother_vcf, mother_sample, mother_bam = key[3], key[4], key[5]
+        father_vcf, father_sample, father_bam = key[6], key[7], key[8]
+        mother_vcf_statuses = statuses_for_vcf(mother_vcf, mother_sample, all_variants)
+        father_vcf_statuses = statuses_for_vcf(father_vcf, father_sample, all_variants)
+        mother_origin_statuses = combined_parent_statuses(mother_vcf_statuses, statuses_for_bam(mother_bam, reference, all_variants, args))
+        father_origin_statuses = combined_parent_statuses(father_vcf_statuses, statuses_for_bam(father_bam, reference, all_variants, args))
         status_lookup = {variant: i for i, variant in enumerate(all_variants)}
         out = []
         for row_index, row, variants in row_variants:
-            row_mother_statuses = [mother_statuses[status_lookup[variant]] for variant in variants]
-            row_father_statuses = [father_statuses[status_lookup[variant]] for variant in variants]
+            row_mother_statuses = [mother_vcf_statuses[status_lookup[variant]] for variant in variants]
+            row_father_statuses = [father_vcf_statuses[status_lookup[variant]] for variant in variants]
+            row_mother_origin_statuses = [mother_origin_statuses[status_lookup[variant]] for variant in variants]
+            row_father_origin_statuses = [father_origin_statuses[status_lookup[variant]] for variant in variants]
             annotations = []
             details = []
             origin_hints = [""] * len(variants)
@@ -437,8 +530,8 @@ def main():
                 local_indices = [j for j, variant in enumerate(variants) if variant[0] == chrom and cluster_start - args.origin_window <= variant[1] <= cluster_end + args.origin_window]
                 local_map = {idx: pos for pos, idx in enumerate(local_indices)}
                 local_variants = [variants[j] for j in local_indices]
-                local_mother = [row_mother_statuses[j] for j in local_indices]
-                local_father = [row_father_statuses[j] for j in local_indices]
+                local_mother = [row_mother_origin_statuses[j] for j in local_indices]
+                local_father = [row_father_origin_statuses[j] for j in local_indices]
                 fragments = None
                 if sample_bam and os.path.exists(sample_bam) and len(local_variants) > 1:
                     span_start = min(v[1] for v in local_variants) - args.origin_window
@@ -472,7 +565,7 @@ def main():
     for extra in (args.annotation_column, args.detail_column, args.origin_column, "mother_status", "father_status"):
         if extra not in fieldnames:
             fieldnames.append(extra)
-    for path_column in (args.bam_column, args.reference_column, args.mother_vcf_column, args.father_vcf_column, "vcf"):
+    for path_column in (args.bam_column, args.reference_column, args.mother_vcf_column, args.father_vcf_column, args.mother_bam_column, args.father_bam_column, "vcf"):
         if path_column in fieldnames:
             fieldnames.remove(path_column)
     rows_out = [{k: v for k, v in row.items() if k in fieldnames} for row in rows_out]
