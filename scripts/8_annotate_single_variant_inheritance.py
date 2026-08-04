@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 MISSING_VALUES = {"", ".", "NA", "N/A", "NONE", "NULL", "NAN"}
 DEFAULT_THREADS = 8
-DEFAULT_ORIGIN_WINDOW = 5000
+DEFAULT_ORIGIN_WINDOW = 500
 DEFAULT_MIN_MAPQ = 20
 DEFAULT_MIN_BASEQ = 20
 pysam = None
