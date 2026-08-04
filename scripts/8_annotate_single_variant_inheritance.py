@@ -5,6 +5,7 @@ import argparse
 import csv
 import os
 import subprocess
+import sys
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -33,6 +34,16 @@ def parse_variant(value):
 
 def split_variant_values(value):
     return [item.strip() for item in str(value).split(";") if item.strip()]
+
+
+def progress(message, debug=False, enabled=True):
+    if enabled and not debug:
+        print(message, file=sys.stderr, flush=True)
+
+
+def progress_debug(message, enabled=False):
+    if enabled:
+        print(message, file=sys.stderr, flush=True)
 
 
 def contig_aliases(chrom):
@@ -468,6 +479,7 @@ def main():
     parser.add_argument("--max-parent-bam-alt-depth-for-ref", type=int, default=DEFAULT_MAX_PARENT_BAM_ALT_DEPTH_FOR_REF, help="Maximum alt-supporting reads in a parent BAM to call no_alt")
     parser.add_argument("--max-parent-bam-alt-frac-for-ref", type=float, default=DEFAULT_MAX_PARENT_BAM_ALT_FRAC_FOR_REF, help="Maximum alt fraction in a parent BAM to call no_alt")
     parser.add_argument("--include-duplicates", action="store_true", help="Include duplicate reads in BAM evidence")
+    parser.add_argument("--debug-progress", action="store_true", help="Print detailed per-row progress messages")
     args = parser.parse_args()
 
     try:
@@ -487,6 +499,7 @@ def main():
             if args.sample_column in row and row_value(row, args.sample_column):
                 row["sample"] = row_value(row, args.sample_column)
         total = len(rows)
+    progress(f"Loaded {total} input rows from {args.input_tsv}")
 
     groups = {}
     order = []
@@ -506,6 +519,7 @@ def main():
             groups[key] = []
             order.append(key)
         groups[key].append((row_index, row))
+    progress(f"Grouped rows into {len(order)} sample/parent combinations")
 
     def process_group(item):
         group_index, key = item
@@ -515,13 +529,19 @@ def main():
         sample_bam, reference = key[1], key[2]
         mother_vcf, mother_sample, mother_bam = key[3], key[4], key[5]
         father_vcf, father_sample, father_bam = key[6], key[7], key[8]
+        progress(f"[{group_index}/{len(order)}] sample={key[0] or 'NA'} rows={len(grouped_rows)} variants={len(all_variants)}")
         mother_vcf_statuses = statuses_for_vcf(mother_vcf, mother_sample, all_variants)
         father_vcf_statuses = statuses_for_vcf(father_vcf, father_sample, all_variants)
         mother_origin_statuses = combined_parent_statuses(mother_vcf_statuses, statuses_for_bam(mother_bam, reference, all_variants, args))
         father_origin_statuses = combined_parent_statuses(father_vcf_statuses, statuses_for_bam(father_bam, reference, all_variants, args))
+        progress_debug(
+            f"[{group_index}/{len(order)}] parent-status summary mother={dict((s, mother_vcf_statuses.count(s)) for s in sorted(set(mother_vcf_statuses)))} "
+            f"father={dict((s, father_vcf_statuses.count(s)) for s in sorted(set(father_vcf_statuses)))}",
+            args.debug_progress,
+        )
         status_lookup = {variant: i for i, variant in enumerate(all_variants)}
         out = []
-        for row_index, row, variants in row_variants:
+        for row_num, (row_index, row, variants) in enumerate(row_variants, start=1):
             row_mother_statuses = [mother_vcf_statuses[status_lookup[variant]] for variant in variants]
             row_father_statuses = [father_vcf_statuses[status_lookup[variant]] for variant in variants]
             row_mother_origin_statuses = [mother_origin_statuses[status_lookup[variant]] for variant in variants]
@@ -536,6 +556,13 @@ def main():
                 details.append(detail)
                 if annotation in {"de_novo", "uncertain"}:
                     origin_candidate_indices.append(i)
+            progress_debug(
+                f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] sample={row_value(row, args.sample_column) or 'NA'} "
+                f"variants={';'.join(':'.join(map(str, v)) for v in variants)} "
+                f"mother_vcf={';'.join(row_mother_statuses)} father_vcf={';'.join(row_father_statuses)} "
+                f"candidates={len(origin_candidate_indices)}",
+                args.debug_progress,
+            )
             for cluster in cluster_indices(origin_candidate_indices, variants, args.origin_window):
                 chrom = variants[cluster[0]][0]
                 cluster_start = min(variants[i][1] for i in cluster)
@@ -549,12 +576,25 @@ def main():
                 if sample_bam and os.path.exists(sample_bam) and len(local_variants) > 1:
                     span_start = min(v[1] for v in local_variants) - args.origin_window
                     span_end = max(v[1] + len(v[2]) for v in local_variants) + args.origin_window
+                    progress_debug(
+                        f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] cluster={cluster} span={chrom}:{span_start}-{span_end} local_variants={len(local_variants)} using_proband_bam=yes",
+                        args.debug_progress,
+                    )
                     fragments = cached_read_fragments(sample_bam, reference, tuple(local_variants), span_start, span_end, args.min_mapq, args.min_baseq, args.include_duplicates)
+                else:
+                    progress_debug(
+                        f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] cluster={cluster} using_proband_bam=no",
+                        args.debug_progress,
+                    )
                 for idx in cluster:
                     hint = classify_origin_hint(local_map[idx], local_variants, local_mother, local_father, args.origin_window, fragments)
                     origin_hints[idx] = hint
                     if hint:
                         details[idx] = hint
+                progress_debug(
+                    f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] cluster={cluster} origin_hints={';'.join(origin_hints[i] or '.' for i in cluster)}",
+                    args.debug_progress,
+                )
             row[args.annotation_column] = ";".join(annotations)
             row[args.detail_column] = ";".join(details)
             row[args.origin_column] = ";".join(origin_hints)
@@ -572,7 +612,7 @@ def main():
             for row_index, row in group_rows:
                 rows_out[row_index] = row
             done += 1
-            print(f"Finished sample group {done}/{len(order)}", flush=True)
+            progress(f"Finished sample group {done}/{len(order)}")
 
     fieldnames = list(rows_out[0].keys()) if rows_out else list(reader.fieldnames or [])
     for extra in (args.annotation_column, args.detail_column, args.origin_column, "mother_status", "father_status"):
