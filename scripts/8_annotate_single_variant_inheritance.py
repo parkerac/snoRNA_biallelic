@@ -4,9 +4,12 @@
 import argparse
 import csv
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 MISSING_VALUES = {"", ".", "NA", "N/A", "NONE", "NULL", "NAN"}
+DEFAULT_THREADS = 8
+DEFAULT_ORIGIN_WINDOW = 5000
 pysam = None
 
 
@@ -64,28 +67,48 @@ def classify_record(rec, variant, sample):
     return "ambiguous" if any(a > 0 for a in alleles) else "no_alt"
 
 
-def status_for_vcf(vcf_path, sample, variant):
+def variant_status_for_record(rec, variant, sample):
+    alleles = gt_alleles(rec, sample)
+    if alleles is None:
+        return "ambiguous"
+    alt_indices = real_alt_indices(rec)
+    if rec.pos == variant[1] and rec.ref.upper() == variant[2] and variant[3] in alt_indices:
+        return "has_alt" if alt_indices[variant[3]] in alleles else "no_alt"
+    if rec.start <= variant[1] - 1 < rec.stop and alleles == {0}:
+        return "no_alt"
+    return "ambiguous" if any(a > 0 for a in alleles) else "no_alt"
+
+
+def statuses_for_vcf(vcf_path, sample, variants):
     if not vcf_path:
-        return "missing"
+        return ["missing"] * len(variants)
     if not os.path.exists(vcf_path):
-        return "missing_file"
+        return ["missing_file"] * len(variants)
     with pysam.VariantFile(vcf_path) as vcf:
         sample = sample or next(iter(vcf.header.samples), None)
         if not sample or sample not in vcf.header.samples:
-            return "missing_sample"
-        try:
-            records = vcf.fetch(resolve_contig(vcf, variant[0]), max(0, variant[1] - 1), variant[1] + len(variant[2]))
-        except Exception:
-            return "no_record"
-        saw_record = False
-        for rec in records:
-            if not (rec.start <= variant[1] - 1 < rec.stop):
+            return ["missing_sample"] * len(variants)
+        statuses = ["no_record"] * len(variants)
+        by_chrom = {}
+        for i, variant in enumerate(variants):
+            by_chrom.setdefault(variant[0], []).append((i, variant))
+        for chrom, chrom_variants in by_chrom.items():
+            try:
+                records = list(vcf.fetch(resolve_contig(vcf, chrom), max(0, min(v[1] for _, v in chrom_variants) - 1), max(v[1] + len(v[2]) for _, v in chrom_variants)))
+            except Exception:
                 continue
-            saw_record = True
-            status = classify_record(rec, variant, sample)
-            if status in {"has_alt", "no_alt"}:
-                return status
-        return "ambiguous" if saw_record else "no_record"
+            for i, variant in chrom_variants:
+                saw_record = False
+                status = "no_record"
+                for rec in records:
+                    if not (rec.start <= variant[1] - 1 < rec.stop):
+                        continue
+                    saw_record = True
+                    status = variant_status_for_record(rec, variant, sample)
+                    if status in {"has_alt", "no_alt"}:
+                        break
+                statuses[i] = "ambiguous" if saw_record and status not in {"has_alt", "no_alt"} else status
+        return statuses
 
 
 def classify_inheritance(mother_status, father_status):
@@ -94,6 +117,25 @@ def classify_inheritance(mother_status, father_status):
     if mother_status == "no_alt" and father_status == "no_alt":
         return "de_novo", "neither_parent_carries_variant"
     return "uncertain", "parental_evidence_inconclusive"
+
+
+def classify_origin_hint(index, variants, mother_statuses, father_statuses, window):
+    if mother_statuses[index] != "no_alt" or father_statuses[index] != "no_alt":
+        return ""
+    chrom, pos, _, _ = variants[index]
+    maternal = paternal = 0
+    for j, other in enumerate(variants):
+        if j == index or other[0] != chrom or abs(other[1] - pos) > window:
+            continue
+        if mother_statuses[j] == "has_alt" and father_statuses[j] == "no_alt":
+            maternal += 1
+        elif father_statuses[j] == "has_alt" and mother_statuses[j] == "no_alt":
+            paternal += 1
+    if maternal and not paternal:
+        return "maternal"
+    if paternal and not maternal:
+        return "paternal"
+    return "uncertain"
 
 
 def row_value(row, key):
@@ -117,8 +159,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-tsv", required=True, help="TSV with one or more variants per row")
     parser.add_argument("--variant-column", default="variant_id", help="Variant column in chrom:pos:ref:alt format, optionally semicolon-separated")
-    parser.add_argument("--sample-column", default="sample", help="Proband sample column in the proband VCF")
-    parser.add_argument("--vcf-column", default="vcf", help="Proband VCF column used to confirm the variant is present")
     parser.add_argument("--mother-vcf-column", default="mother_vcf", help="Mother VCF column")
     parser.add_argument("--father-vcf-column", default="father_vcf", help="Father VCF column")
     parser.add_argument("--mother-sample-column", default="mother_sample", help="Mother sample column")
@@ -126,6 +166,9 @@ def main():
     parser.add_argument("--out", required=True, help="Output TSV with inheritance annotation")
     parser.add_argument("--annotation-column", default="inheritance_annotation", help="Name of the output annotation column")
     parser.add_argument("--detail-column", default="inheritance_detail", help="Name of the output detail column")
+    parser.add_argument("--origin-column", default="parental_origin", help="Name of the output maternal/paternal origin hint column")
+    parser.add_argument("--origin-window", type=int, default=DEFAULT_ORIGIN_WINDOW, help="Nearby base window used to infer de novo parent-of-origin from other informative variants")
+    parser.add_argument("--threads", type=int, default=DEFAULT_THREADS, help="Number of worker threads")
     args = parser.parse_args()
 
     try:
@@ -140,36 +183,53 @@ def main():
         reader = csv.DictReader(fh, delimiter="\t")
         if not reader.fieldnames:
             raise SystemExit(f"{args.input_tsv} has no header")
-        rows = []
-        for row in reader:
-            variants = variant_from_row(row, args.variant_column)
-            mother_statuses = []
-            father_statuses = []
-            annotations = []
-            details = []
-            for variant in variants:
-                mother_status = status_for_vcf(row_value(row, args.mother_vcf_column), row_value(row, args.mother_sample_column), variant)
-                father_status = status_for_vcf(row_value(row, args.father_vcf_column), row_value(row, args.father_sample_column), variant)
-                annotation, detail = classify_inheritance(mother_status, father_status)
-                mother_statuses.append(mother_status)
-                father_statuses.append(father_status)
-                annotations.append(annotation)
-                details.append(detail)
-            row[args.annotation_column] = ";".join(annotations)
-            row[args.detail_column] = ";".join(details)
-            row["mother_status"] = ";".join(mother_statuses)
-            row["father_status"] = ";".join(father_statuses)
-            rows.append(row)
+        rows = list(reader)
+        total = len(rows)
 
-    fieldnames = list(rows[0].keys()) if rows else list(reader.fieldnames or [])
-    for extra in (args.annotation_column, args.detail_column, "mother_status", "father_status"):
+    def process(item):
+        row_index, row = item
+        variants = variant_from_row(row, args.variant_column)
+        mother_statuses = statuses_for_vcf(row_value(row, args.mother_vcf_column), row_value(row, args.mother_sample_column), variants)
+        father_statuses = statuses_for_vcf(row_value(row, args.father_vcf_column), row_value(row, args.father_sample_column), variants)
+        annotations = []
+        details = []
+        origin_hints = []
+        for i, _variant in enumerate(variants):
+            annotation, detail = classify_inheritance(mother_statuses[i], father_statuses[i])
+            annotations.append(annotation)
+            if annotation == "de_novo":
+                hint = classify_origin_hint(i, variants, mother_statuses, father_statuses, args.origin_window)
+                origin_hints.append(hint)
+                details.append(hint if hint else detail)
+            else:
+                origin_hints.append("")
+                details.append(detail)
+        row[args.annotation_column] = ";".join(annotations)
+        row[args.detail_column] = ";".join(details)
+        row[args.origin_column] = ";".join(origin_hints)
+        row["mother_status"] = ";".join(mother_statuses)
+        row["father_status"] = ";".join(father_statuses)
+        return row_index, row
+
+    rows_out = [None] * total
+    with ThreadPoolExecutor(max_workers=max(1, args.threads)) as pool:
+        futures = {pool.submit(process, (i, row)): i for i, row in enumerate(rows)}
+        done = 0
+        for future in as_completed(futures):
+            row_index, row = future.result()
+            rows_out[row_index] = row
+            done += 1
+            print(f"Finished row {done}/{total}", flush=True)
+
+    fieldnames = list(rows_out[0].keys()) if rows_out else list(reader.fieldnames or [])
+    for extra in (args.annotation_column, args.detail_column, args.origin_column, "mother_status", "father_status"):
         if extra not in fieldnames:
             fieldnames.append(extra)
 
     with open(args.out, "w", newline="") as fh:
         writer = csv.DictWriter(fh, delimiter="\t", fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(rows_out)
 
 
 if __name__ == "__main__":
