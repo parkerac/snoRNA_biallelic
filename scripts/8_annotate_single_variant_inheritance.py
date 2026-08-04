@@ -472,7 +472,7 @@ def main():
     for extra in (args.annotation_column, args.detail_column, args.origin_column, "mother_status", "father_status"):
         if extra not in fieldnames:
             fieldnames.append(extra)
-    for path_column in (args.bam_column, args.reference_column, args.mother_vcf_column, args.father_vcf_column):
+    for path_column in (args.bam_column, args.reference_column, args.mother_vcf_column, args.father_vcf_column, "vcf"):
         if path_column in fieldnames:
             fieldnames.remove(path_column)
     rows_out = [{k: v for k, v in row.items() if k in fieldnames} for row in rows_out]
