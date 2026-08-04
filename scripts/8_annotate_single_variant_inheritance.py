@@ -563,7 +563,12 @@ def main():
                 f"candidates={len(origin_candidate_indices)}",
                 args.debug_progress,
             )
-            for cluster in cluster_indices(origin_candidate_indices, variants, args.origin_window):
+            clusters = cluster_indices(origin_candidate_indices, variants, args.origin_window)
+            progress_debug(
+                f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] origin_clusters={len(clusters)}",
+                args.debug_progress,
+            )
+            for cluster in clusters:
                 chrom = variants[cluster[0]][0]
                 cluster_start = min(variants[i][1] for i in cluster)
                 cluster_end = max(variants[i][1] + len(variants[i][2]) for i in cluster)
@@ -573,7 +578,22 @@ def main():
                 local_mother = [row_mother_origin_statuses[j] for j in local_indices]
                 local_father = [row_father_origin_statuses[j] for j in local_indices]
                 fragments = None
-                if sample_bam and os.path.exists(sample_bam) and len(local_variants) > 1:
+                if not sample_bam:
+                    progress_debug(
+                        f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] cluster={cluster} proband_bam=missing",
+                        args.debug_progress,
+                    )
+                elif not os.path.exists(sample_bam):
+                    progress_debug(
+                        f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] cluster={cluster} proband_bam=missing_file path={sample_bam}",
+                        args.debug_progress,
+                    )
+                elif len(local_variants) <= 1:
+                    progress_debug(
+                        f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] cluster={cluster} proband_bam=skipped reason=single_local_variant local_variants={len(local_variants)}",
+                        args.debug_progress,
+                    )
+                else:
                     span_start = min(v[1] for v in local_variants) - args.origin_window
                     span_end = max(v[1] + len(v[2]) for v in local_variants) + args.origin_window
                     progress_debug(
@@ -581,11 +601,6 @@ def main():
                         args.debug_progress,
                     )
                     fragments = cached_read_fragments(sample_bam, reference, tuple(local_variants), span_start, span_end, args.min_mapq, args.min_baseq, args.include_duplicates)
-                else:
-                    progress_debug(
-                        f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] cluster={cluster} using_proband_bam=no",
-                        args.debug_progress,
-                    )
                 for idx in cluster:
                     hint = classify_origin_hint(local_map[idx], local_variants, local_mother, local_father, args.origin_window, fragments)
                     origin_hints[idx] = hint
