@@ -235,37 +235,33 @@ def statuses_for_vcf(vcf_path, sample, variants):
     if key in VCF_STATUS_CACHE:
         return VCF_STATUS_CACHE[key]
     statuses = ["no_record"] * len(variants)
-    by_chrom = {}
+    sample_index = None
+    sample_names = None
     for i, variant in enumerate(variants):
-        by_chrom.setdefault(variant[0], []).append((i, variant))
-    for chrom, chrom_variants in by_chrom.items():
-        headers, records = tabix_fetch_records(vcf_path, chrom, min(v[1] for _, v in chrom_variants) - 1, max(v[1] + len(v[2]) for _, v in chrom_variants))
-        if not records:
-            continue
-        header = next((line for line in headers if line.startswith("#CHROM")), None)
-        sample_names = header.lstrip("#").split("\t")[9:] if header else []
-        sample_name = sample or (sample_names[0] if sample_names else None)
-        if not sample_name or sample_name not in sample_names:
-            for i, _variant in chrom_variants:
-                statuses[i] = "missing_sample"
-            continue
-        sample_index = sample_names.index(sample_name)
-        for i, variant in chrom_variants:
-            saw_record = False
-            status = "no_record"
-            for line in records:
-                fields = parse_vcf_line(line)
-                if not fields:
-                    continue
-                pos = int(fields[1])
-                ref = fields[3]
-                if not (pos - 1 <= variant[1] - 1 < pos - 1 + len(ref)):
-                    continue
-                saw_record = True
-                status = tabix_status_for_variant(fields, sample_index, variant)
-                if status in {"has_alt", "no_alt"}:
-                    break
-            statuses[i] = "ambiguous" if saw_record and status not in {"has_alt", "no_alt"} else status
+        headers, records = tabix_fetch_records(vcf_path, variant[0], variant[1] - 1, variant[1] + len(variant[2]))
+        if not sample_names:
+            header = next((line for line in headers if line.startswith("#CHROM")), None)
+            sample_names = header.lstrip("#").split("\t")[9:] if header else []
+            sample_name = sample or (sample_names[0] if sample_names else None)
+            if not sample_name or sample_name not in sample_names:
+                statuses = ["missing_sample"] * len(variants)
+                break
+            sample_index = sample_names.index(sample_name)
+        saw_record = False
+        status = "no_record"
+        for line in records:
+            fields = parse_vcf_line(line)
+            if not fields:
+                continue
+            pos = int(fields[1])
+            ref = fields[3]
+            if not (pos - 1 <= variant[1] - 1 < pos - 1 + len(ref)):
+                continue
+            saw_record = True
+            status = tabix_status_for_variant(fields, sample_index, variant)
+            if status in {"has_alt", "no_alt"}:
+                break
+        statuses[i] = "ambiguous" if saw_record and status not in {"has_alt", "no_alt"} else status
     VCF_STATUS_CACHE[key] = statuses
     return statuses
 
@@ -476,6 +472,10 @@ def main():
     for extra in (args.annotation_column, args.detail_column, args.origin_column, "mother_status", "father_status"):
         if extra not in fieldnames:
             fieldnames.append(extra)
+    for path_column in (args.bam_column, args.reference_column, args.mother_vcf_column, args.father_vcf_column):
+        if path_column in fieldnames:
+            fieldnames.remove(path_column)
+    rows_out = [{k: v for k, v in row.items() if k in fieldnames} for row in rows_out]
 
     with open(args.out, "w", newline="") as fh:
         writer = csv.DictWriter(fh, delimiter="\t", fieldnames=fieldnames)
