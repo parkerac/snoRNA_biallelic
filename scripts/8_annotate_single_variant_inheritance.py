@@ -155,10 +155,21 @@ def variant_from_row(row, variant_column):
     raise ValueError(f"Could not find a variant in column {variant_column or 'variant_id'} or chrom/pos/ref/alt fields")
 
 
+def unique_variants(variants):
+    seen = set()
+    out = []
+    for variant in variants:
+        if variant not in seen:
+            seen.add(variant)
+            out.append(variant)
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-tsv", required=True, help="TSV with one or more variants per row")
     parser.add_argument("--variant-column", default="variant_id", help="Variant column in chrom:pos:ref:alt format, optionally semicolon-separated")
+    parser.add_argument("--sample-column", default="sample", help="Sample column to preserve in the output")
     parser.add_argument("--mother-vcf-column", default="mother_vcf", help="Mother VCF column")
     parser.add_argument("--father-vcf-column", default="father_vcf", help="Father VCF column")
     parser.add_argument("--mother-sample-column", default="mother_sample", help="Mother sample column")
@@ -184,42 +195,69 @@ def main():
         if not reader.fieldnames:
             raise SystemExit(f"{args.input_tsv} has no header")
         rows = list(reader)
+        for row in rows:
+            if args.sample_column in row and row_value(row, args.sample_column):
+                row["sample"] = row_value(row, args.sample_column)
         total = len(rows)
 
-    def process(item):
-        row_index, row = item
-        variants = variant_from_row(row, args.variant_column)
-        mother_statuses = statuses_for_vcf(row_value(row, args.mother_vcf_column), row_value(row, args.mother_sample_column), variants)
-        father_statuses = statuses_for_vcf(row_value(row, args.father_vcf_column), row_value(row, args.father_sample_column), variants)
-        annotations = []
-        details = []
-        origin_hints = []
-        for i, _variant in enumerate(variants):
-            annotation, detail = classify_inheritance(mother_statuses[i], father_statuses[i])
-            annotations.append(annotation)
-            if annotation == "de_novo":
-                hint = classify_origin_hint(i, variants, mother_statuses, father_statuses, args.origin_window)
-                origin_hints.append(hint)
-                details.append(hint if hint else detail)
-            else:
-                origin_hints.append("")
-                details.append(detail)
-        row[args.annotation_column] = ";".join(annotations)
-        row[args.detail_column] = ";".join(details)
-        row[args.origin_column] = ";".join(origin_hints)
-        row["mother_status"] = ";".join(mother_statuses)
-        row["father_status"] = ";".join(father_statuses)
-        return row_index, row
+    groups = {}
+    order = []
+    for row_index, row in enumerate(rows):
+        key = (
+            row_value(row, args.sample_column),
+            row_value(row, args.mother_vcf_column),
+            row_value(row, args.mother_sample_column),
+            row_value(row, args.father_vcf_column),
+            row_value(row, args.father_sample_column),
+        )
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append((row_index, row))
+
+    def process_group(item):
+        group_index, key = item
+        grouped_rows = groups[key]
+        row_variants = [(row_index, row, variant_from_row(row, args.variant_column)) for row_index, row in grouped_rows]
+        all_variants = unique_variants([variant for _, _, variants in row_variants for variant in variants])
+        mother_statuses = statuses_for_vcf(key[1], key[2], all_variants)
+        father_statuses = statuses_for_vcf(key[3], key[4], all_variants)
+        status_lookup = {variant: i for i, variant in enumerate(all_variants)}
+        out = []
+        for row_index, row, variants in row_variants:
+            row_mother_statuses = [mother_statuses[status_lookup[variant]] for variant in variants]
+            row_father_statuses = [father_statuses[status_lookup[variant]] for variant in variants]
+            annotations = []
+            details = []
+            origin_hints = []
+            for i, _variant in enumerate(variants):
+                annotation, detail = classify_inheritance(row_mother_statuses[i], row_father_statuses[i])
+                annotations.append(annotation)
+                if annotation == "de_novo":
+                    hint = classify_origin_hint(i, variants, row_mother_statuses, row_father_statuses, args.origin_window)
+                    origin_hints.append(hint)
+                    details.append(hint if hint else detail)
+                else:
+                    origin_hints.append("")
+                    details.append(detail)
+            row[args.annotation_column] = ";".join(annotations)
+            row[args.detail_column] = ";".join(details)
+            row[args.origin_column] = ";".join(origin_hints)
+            row["mother_status"] = ";".join(row_mother_statuses)
+            row["father_status"] = ";".join(row_father_statuses)
+            out.append((row_index, row))
+        return group_index, out
 
     rows_out = [None] * total
     with ThreadPoolExecutor(max_workers=max(1, args.threads)) as pool:
-        futures = {pool.submit(process, (i, row)): i for i, row in enumerate(rows)}
+        futures = {pool.submit(process_group, (i, key)): i for i, key in enumerate(order, start=1)}
         done = 0
         for future in as_completed(futures):
-            row_index, row = future.result()
-            rows_out[row_index] = row
+            _, group_rows = future.result()
+            for row_index, row in group_rows:
+                rows_out[row_index] = row
             done += 1
-            print(f"Finished row {done}/{total}", flush=True)
+            print(f"Finished sample group {done}/{len(order)}", flush=True)
 
     fieldnames = list(rows_out[0].keys()) if rows_out else list(reader.fieldnames or [])
     for extra in (args.annotation_column, args.detail_column, args.origin_column, "mother_status", "father_status"):
