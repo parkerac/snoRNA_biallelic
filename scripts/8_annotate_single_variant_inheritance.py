@@ -4,6 +4,7 @@
 import argparse
 import csv
 import os
+import subprocess
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -14,6 +15,9 @@ DEFAULT_ORIGIN_WINDOW = 500
 DEFAULT_MIN_MAPQ = 20
 DEFAULT_MIN_BASEQ = 20
 pysam = None
+TABIX_CACHE = {}
+VCF_STATUS_CACHE = {}
+FRAGMENTS_CACHE = {}
 
 
 def parse_variant(value):
@@ -43,41 +47,70 @@ def resolve_contig(handle, chrom):
     raise ValueError(f"Contig {chrom} was not found; tried {', '.join(contig_aliases(chrom))}")
 
 
-def real_alt_indices(rec):
-    return {alt.upper(): i + 1 for i, alt in enumerate(rec.alts or []) if alt and not alt.startswith("<") and alt != "*"}
-
-
-def gt_alleles(rec, sample):
-    if not sample:
-        sample = next(iter(rec.samples), None)
-    if not sample or sample not in rec.samples:
+def parse_gt_string(gt):
+    if not gt or gt in MISSING_VALUES:
         return None
-    gt = rec.samples[sample].get("GT")
-    if gt is None or any(a is None for a in gt):
+    alleles = gt.replace("|", "/").split("/")
+    if len(alleles) != 2 or any(a in {".", ""} for a in alleles):
         return None
-    return set(gt)
+    try:
+        return {int(a) for a in alleles}
+    except ValueError:
+        return None
 
 
-def classify_record(rec, variant, sample):
-    alleles = gt_alleles(rec, sample)
+def parse_vcf_line(line):
+    fields = line.rstrip("\n").split("\t")
+    if len(fields) < 8:
+        return None
+    return fields
+
+
+def tabix_query(vcf_path, chrom, start, end):
+    key = (vcf_path, chrom, start, end)
+    if key in TABIX_CACHE:
+        return TABIX_CACHE[key]
+    region = f"{chrom}:{max(1, start)}-{end}"
+    proc = subprocess.run(["tabix", "-h", vcf_path, region], capture_output=True, text=True)
+    if proc.returncode != 0:
+        TABIX_CACHE[key] = ([], [])
+        return ([], [])
+    headers = []
+    records = []
+    for line in proc.stdout.splitlines():
+        if not line:
+            continue
+        if line.startswith("#"):
+            headers.append(line)
+        else:
+            records.append(line)
+    TABIX_CACHE[key] = (headers, records)
+    return headers, records
+
+
+def tabix_fetch_records(vcf_path, chrom, start, end):
+    for alias in contig_aliases(chrom):
+        headers, records = tabix_query(vcf_path, alias, start, end)
+        if records:
+            return headers, records
+    return [], []
+
+
+def tabix_status_for_variant(fields, sample_index, variant):
+    pos = int(fields[1])
+    ref = fields[3].upper()
+    alts = [alt.upper() for alt in fields[4].split(",") if alt and alt != "."]
+    format_fields = fields[8].split(":") if len(fields) > 8 else []
+    sample_fields = fields[9 + sample_index].split(":") if len(fields) > 9 + sample_index else []
+    gt_index = format_fields.index("GT") if "GT" in format_fields else None
+    gt = sample_fields[gt_index] if gt_index is not None and gt_index < len(sample_fields) else None
+    alleles = parse_gt_string(gt)
     if alleles is None:
         return "ambiguous"
-    alt_indices = real_alt_indices(rec)
-    if rec.pos == variant[1] and rec.ref.upper() == variant[2] and variant[3] in alt_indices:
+    alt_indices = {alt: i + 1 for i, alt in enumerate(alts)}
+    if pos == variant[1] and ref == variant[2] and variant[3] in alt_indices:
         return "has_alt" if alt_indices[variant[3]] in alleles else "no_alt"
-    if rec.start <= variant[1] - 1 < rec.stop and alleles == {0}:
-        return "no_alt"
-    return "ambiguous" if any(a > 0 for a in alleles) else "no_alt"
-
-
-def variant_status_for_record(rec, variant, sample):
-    alleles = gt_alleles(rec, sample)
-    if alleles is None:
-        return "ambiguous"
-    alt_indices = real_alt_indices(rec)
-    if rec.pos == variant[1] and rec.ref.upper() == variant[2] and variant[3] in alt_indices:
-        return "has_alt" if alt_indices[variant[3]] in alleles else "no_alt"
-    if rec.start <= variant[1] - 1 < rec.stop and alleles == {0}:
+    if pos - 1 <= variant[1] - 1 < pos - 1 + len(ref) and alleles == {0}:
         return "no_alt"
     return "ambiguous" if any(a > 0 for a in alleles) else "no_alt"
 
@@ -178,6 +211,13 @@ def read_fragments(bam_path, reference, variants, start, end, min_mapq, min_base
     return {name: {i: c for i, c in calls.items() if c is not None} for name, calls in fragments.items()}
 
 
+def cached_read_fragments(bam_path, reference, variants, start, end, min_mapq, min_baseq, include_duplicates):
+    key = (bam_path, reference, tuple(variants), start, end, min_mapq, min_baseq, include_duplicates)
+    if key not in FRAGMENTS_CACHE:
+        FRAGMENTS_CACHE[key] = read_fragments(bam_path, reference, variants, start, end, min_mapq, min_baseq, include_duplicates)
+    return FRAGMENTS_CACHE[key]
+
+
 def parent_origin_from_statuses(mother_status, father_status):
     if mother_status == "has_alt" and father_status == "no_alt":
         return "maternal"
@@ -191,31 +231,43 @@ def statuses_for_vcf(vcf_path, sample, variants):
         return ["missing"] * len(variants)
     if not os.path.exists(vcf_path):
         return ["missing_file"] * len(variants)
-    with pysam.VariantFile(vcf_path) as vcf:
-        sample = sample or next(iter(vcf.header.samples), None)
-        if not sample or sample not in vcf.header.samples:
-            return ["missing_sample"] * len(variants)
-        statuses = ["no_record"] * len(variants)
-        by_chrom = {}
-        for i, variant in enumerate(variants):
-            by_chrom.setdefault(variant[0], []).append((i, variant))
-        for chrom, chrom_variants in by_chrom.items():
-            try:
-                records = list(vcf.fetch(resolve_contig(vcf, chrom), max(0, min(v[1] for _, v in chrom_variants) - 1), max(v[1] + len(v[2]) for _, v in chrom_variants)))
-            except Exception:
-                continue
-            for i, variant in chrom_variants:
-                saw_record = False
-                status = "no_record"
-                for rec in records:
-                    if not (rec.start <= variant[1] - 1 < rec.stop):
-                        continue
-                    saw_record = True
-                    status = variant_status_for_record(rec, variant, sample)
-                    if status in {"has_alt", "no_alt"}:
-                        break
-                statuses[i] = "ambiguous" if saw_record and status not in {"has_alt", "no_alt"} else status
-        return statuses
+    key = (vcf_path, sample, tuple(variants))
+    if key in VCF_STATUS_CACHE:
+        return VCF_STATUS_CACHE[key]
+    statuses = ["no_record"] * len(variants)
+    by_chrom = {}
+    for i, variant in enumerate(variants):
+        by_chrom.setdefault(variant[0], []).append((i, variant))
+    for chrom, chrom_variants in by_chrom.items():
+        headers, records = tabix_fetch_records(vcf_path, chrom, min(v[1] for _, v in chrom_variants) - 1, max(v[1] + len(v[2]) for _, v in chrom_variants))
+        if not records:
+            continue
+        header = next((line for line in headers if line.startswith("#CHROM")), None)
+        sample_names = header.lstrip("#").split("\t")[9:] if header else []
+        sample_name = sample or (sample_names[0] if sample_names else None)
+        if not sample_name or sample_name not in sample_names:
+            for i, _variant in chrom_variants:
+                statuses[i] = "missing_sample"
+            continue
+        sample_index = sample_names.index(sample_name)
+        for i, variant in chrom_variants:
+            saw_record = False
+            status = "no_record"
+            for line in records:
+                fields = parse_vcf_line(line)
+                if not fields:
+                    continue
+                pos = int(fields[1])
+                ref = fields[3]
+                if not (pos - 1 <= variant[1] - 1 < pos - 1 + len(ref)):
+                    continue
+                saw_record = True
+                status = tabix_status_for_variant(fields, sample_index, variant)
+                if status in {"has_alt", "no_alt"}:
+                    break
+            statuses[i] = "ambiguous" if saw_record and status not in {"has_alt", "no_alt"} else status
+    VCF_STATUS_CACHE[key] = statuses
+    return statuses
 
 
 def classify_inheritance(mother_status, father_status):
@@ -284,6 +336,20 @@ def unique_variants(variants):
             seen.add(variant)
             out.append(variant)
     return out
+
+
+def cluster_indices(indices, variants, window):
+    if not indices:
+        return []
+    ordered = sorted(indices, key=lambda i: (variants[i][0], variants[i][1]))
+    clusters = [[ordered[0]]]
+    for idx in ordered[1:]:
+        prev = clusters[-1][-1]
+        if variants[idx][0] == variants[prev][0] and variants[idx][1] - variants[prev][1] <= window:
+            clusters[-1].append(idx)
+        else:
+            clusters.append([idx])
+    return clusters
 
 
 def main():
@@ -360,28 +426,33 @@ def main():
             row_father_statuses = [father_statuses[status_lookup[variant]] for variant in variants]
             annotations = []
             details = []
-            origin_hints = []
+            origin_hints = [""] * len(variants)
+            de_novo_indices = []
             for i, _variant in enumerate(variants):
                 annotation, detail = classify_inheritance(row_mother_statuses[i], row_father_statuses[i])
                 annotations.append(annotation)
+                details.append(detail)
                 if annotation == "de_novo":
-                    nearby = [j for j, other in enumerate(variants) if j != i and other[0] == variants[i][0] and abs(other[1] - variants[i][1]) <= args.origin_window]
-                    if nearby and sample_bam and os.path.exists(sample_bam):
-                        local_indices = [i] + nearby
-                        local_variants = [variants[j] for j in local_indices]
-                        local_mother = [row_mother_statuses[j] for j in local_indices]
-                        local_father = [row_father_statuses[j] for j in local_indices]
-                        span_start = min(v[1] for v in local_variants) - args.origin_window
-                        span_end = max(v[1] + len(v[2]) for v in local_variants) + args.origin_window
-                        fragments = read_fragments(sample_bam, reference, local_variants, span_start, span_end, args.min_mapq, args.min_baseq, args.include_duplicates)
-                        hint = classify_origin_hint(0, local_variants, local_mother, local_father, args.origin_window, fragments)
-                    else:
-                        hint = classify_origin_hint(i, variants, row_mother_statuses, row_father_statuses, args.origin_window)
-                    origin_hints.append(hint)
-                    details.append(hint if hint else detail)
-                else:
-                    origin_hints.append("")
-                    details.append(detail)
+                    de_novo_indices.append(i)
+            for cluster in cluster_indices(de_novo_indices, variants, args.origin_window):
+                chrom = variants[cluster[0]][0]
+                cluster_start = min(variants[i][1] for i in cluster)
+                cluster_end = max(variants[i][1] + len(variants[i][2]) for i in cluster)
+                local_indices = [j for j, variant in enumerate(variants) if variant[0] == chrom and cluster_start - args.origin_window <= variant[1] <= cluster_end + args.origin_window]
+                local_map = {idx: pos for pos, idx in enumerate(local_indices)}
+                local_variants = [variants[j] for j in local_indices]
+                local_mother = [row_mother_statuses[j] for j in local_indices]
+                local_father = [row_father_statuses[j] for j in local_indices]
+                fragments = None
+                if sample_bam and os.path.exists(sample_bam) and len(local_variants) > 1:
+                    span_start = min(v[1] for v in local_variants) - args.origin_window
+                    span_end = max(v[1] + len(v[2]) for v in local_variants) + args.origin_window
+                    fragments = cached_read_fragments(sample_bam, reference, tuple(local_variants), span_start, span_end, args.min_mapq, args.min_baseq, args.include_duplicates)
+                for idx in cluster:
+                    hint = classify_origin_hint(local_map[idx], local_variants, local_mother, local_father, args.origin_window, fragments)
+                    origin_hints[idx] = hint
+                    if hint:
+                        details[idx] = hint
             row[args.annotation_column] = ";".join(annotations)
             row[args.detail_column] = ";".join(details)
             row[args.origin_column] = ";".join(origin_hints)
