@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 MISSING_VALUES = {"", ".", "NA", "N/A", "NONE", "NULL", "NAN"}
 DEFAULT_THREADS = 8
-DEFAULT_ORIGIN_WINDOW = 5000
+DEFAULT_ORIGIN_WINDOW = 1000
 DEFAULT_MIN_MAPQ = 20
 DEFAULT_MIN_BASEQ = 20
 DEFAULT_MIN_PARENT_BAM_DEPTH = 8
@@ -130,6 +130,36 @@ def tabix_status_for_variant(fields, sample_index, variant):
     if pos - 1 <= variant[1] - 1 < pos - 1 + len(ref) and alleles == {0}:
         return "no_alt"
     return "ambiguous" if any(a > 0 for a in alleles) else "no_alt"
+
+
+def tabix_variant_records(vcf_path, sample, chrom, start, end):
+    if not vcf_path or not os.path.exists(vcf_path):
+        return []
+    headers, records = tabix_fetch_records(vcf_path, chrom, start, end)
+    header = next((line for line in headers if line.startswith("#CHROM")), None)
+    sample_names = header.lstrip("#").split("\t")[9:] if header else []
+    sample_name = sample or (sample_names[0] if sample_names else None)
+    if not sample_name or sample_name not in sample_names:
+        return []
+    sample_index = sample_names.index(sample_name)
+    seen = []
+    for line in records:
+        fields = parse_vcf_line(line)
+        if not fields:
+            continue
+        pos = int(fields[1])
+        ref = fields[3].upper()
+        alts = [alt.upper() for alt in fields[4].split(",") if alt and alt != "."]
+        format_fields = fields[8].split(":") if len(fields) > 8 else []
+        sample_fields = fields[9 + sample_index].split(":") if len(fields) > 9 + sample_index else []
+        gt_index = format_fields.index("GT") if "GT" in format_fields else None
+        gt = sample_fields[gt_index] if gt_index is not None and gt_index < len(sample_fields) else None
+        alleles = parse_gt_string(gt)
+        if alleles is None or not any(a > 0 for a in alleles):
+            continue
+        for allele in sorted(a for a in alleles if a > 0 and a <= len(alts)):
+            seen.append((fields[0], pos, ref, alts[allele - 1]))
+    return unique_variants(seen)
 
 
 def is_cram(path):
@@ -459,6 +489,7 @@ def main():
     parser.add_argument("--sample-column", default="sample", help="Sample column to preserve in the output")
     parser.add_argument("--bam-column", default="bam", help="Proband BAM/CRAM column")
     parser.add_argument("--reference-column", default="reference", help="Reference FASTA column")
+    parser.add_argument("--proband-vcf-column", default="proband_vcf", help="Proband/sample VCF column used to discover nearby variants for origin inference")
     parser.add_argument("--mother-vcf-column", default="mother_vcf", help="Mother VCF column")
     parser.add_argument("--father-vcf-column", default="father_vcf", help="Father VCF column")
     parser.add_argument("--mother-sample-column", default="mother_sample", help="Mother sample column")
@@ -508,6 +539,7 @@ def main():
             row_value(row, args.sample_column),
             row_value(row, args.bam_column),
             row_value(row, args.reference_column),
+            row_value(row, args.proband_vcf_column),
             row_value(row, args.mother_vcf_column),
             row_value(row, args.mother_sample_column),
             row_value(row, args.mother_bam_column),
@@ -526,9 +558,9 @@ def main():
         grouped_rows = groups[key]
         row_variants = [(row_index, row, variant_from_row(row, args.variant_column)) for row_index, row in grouped_rows]
         all_variants = unique_variants([variant for _, _, variants in row_variants for variant in variants])
-        sample_bam, reference = key[1], key[2]
-        mother_vcf, mother_sample, mother_bam = key[3], key[4], key[5]
-        father_vcf, father_sample, father_bam = key[6], key[7], key[8]
+        sample_bam, reference, proband_vcf = key[1], key[2], key[3]
+        mother_vcf, mother_sample, mother_bam = key[4], key[5], key[6]
+        father_vcf, father_sample, father_bam = key[7], key[8], key[9]
         progress(f"[{group_index}/{len(order)}] sample={key[0] or 'NA'} rows={len(grouped_rows)} variants={len(all_variants)}")
         mother_vcf_statuses = statuses_for_vcf(mother_vcf, mother_sample, all_variants)
         father_vcf_statuses = statuses_for_vcf(father_vcf, father_sample, all_variants)
@@ -572,11 +604,13 @@ def main():
                 chrom = variants[cluster[0]][0]
                 cluster_start = min(variants[i][1] for i in cluster)
                 cluster_end = max(variants[i][1] + len(variants[i][2]) for i in cluster)
-                local_indices = [j for j, variant in enumerate(variants) if variant[0] == chrom and cluster_start - args.origin_window <= variant[1] <= cluster_end + args.origin_window]
-                local_map = {idx: pos for pos, idx in enumerate(local_indices)}
-                local_variants = [variants[j] for j in local_indices]
-                local_mother = [row_mother_origin_statuses[j] for j in local_indices]
-                local_father = [row_father_origin_statuses[j] for j in local_indices]
+                span_start = cluster_start - args.origin_window
+                span_end = cluster_end + args.origin_window
+                discovered_variants = tabix_variant_records(proband_vcf, row_value(row, args.sample_column), chrom, span_start, span_end) if proband_vcf else []
+                local_variants = unique_variants([variants[j] for j in range(len(variants)) if variants[j][0] == chrom and span_start <= variants[j][1] <= span_end] + discovered_variants)
+                local_map = {variant: pos for pos, variant in enumerate(local_variants)}
+                local_mother = combined_parent_statuses(statuses_for_vcf(mother_vcf, mother_sample, local_variants), statuses_for_bam(mother_bam, reference, local_variants, args))
+                local_father = combined_parent_statuses(statuses_for_vcf(father_vcf, father_sample, local_variants), statuses_for_bam(father_bam, reference, local_variants, args))
                 fragments = None
                 if not sample_bam:
                     progress_debug(
@@ -590,19 +624,17 @@ def main():
                     )
                 elif len(local_variants) <= 1:
                     progress_debug(
-                        f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] cluster={cluster} proband_bam=skipped reason=single_local_variant local_variants={len(local_variants)}",
+                        f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] cluster={cluster} proband_bam=skipped reason=single_local_variant local_variants={len(local_variants)} proband_vcf={'yes' if proband_vcf else 'no'}",
                         args.debug_progress,
                     )
                 else:
-                    span_start = min(v[1] for v in local_variants) - args.origin_window
-                    span_end = max(v[1] + len(v[2]) for v in local_variants) + args.origin_window
                     progress_debug(
-                        f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] cluster={cluster} span={chrom}:{span_start}-{span_end} local_variants={len(local_variants)} using_proband_bam=yes",
+                        f"[{group_index}/{len(order)} row {row_num}/{len(row_variants)}] cluster={cluster} span={chrom}:{span_start}-{span_end} local_variants={len(local_variants)} proband_vcf={'yes' if proband_vcf else 'no'} using_proband_bam=yes",
                         args.debug_progress,
                     )
                     fragments = cached_read_fragments(sample_bam, reference, tuple(local_variants), span_start, span_end, args.min_mapq, args.min_baseq, args.include_duplicates)
                 for idx in cluster:
-                    hint = classify_origin_hint(local_map[idx], local_variants, local_mother, local_father, args.origin_window, fragments)
+                    hint = classify_origin_hint(local_map[variants[idx]], local_variants, local_mother, local_father, args.origin_window, fragments)
                     origin_hints[idx] = hint
                     if hint:
                         details[idx] = hint
@@ -633,7 +665,7 @@ def main():
     for extra in (args.annotation_column, args.detail_column, args.origin_column, "mother_status", "father_status"):
         if extra not in fieldnames:
             fieldnames.append(extra)
-    for path_column in (args.bam_column, args.reference_column, args.mother_vcf_column, args.father_vcf_column, args.mother_bam_column, args.father_bam_column, "vcf"):
+    for path_column in (args.bam_column, args.reference_column, args.proband_vcf_column, args.mother_vcf_column, args.father_vcf_column, args.mother_bam_column, args.father_bam_column, "vcf"):
         if path_column in fieldnames:
             fieldnames.remove(path_column)
     rows_out = [{k: v for k, v in row.items() if k in fieldnames} for row in rows_out]
