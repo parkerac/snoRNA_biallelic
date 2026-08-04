@@ -275,7 +275,7 @@ def classify_inheritance(mother_status, father_status):
 
 
 def classify_origin_hint(index, variants, mother_statuses, father_statuses, window, fragments=None):
-    if mother_statuses[index] != "no_alt" or father_statuses[index] != "no_alt":
+    if mother_statuses[index] == "has_alt" or father_statuses[index] == "has_alt":
         return ""
     chrom, pos, _, _ = variants[index]
     maternal = paternal = 0
@@ -423,14 +423,14 @@ def main():
             annotations = []
             details = []
             origin_hints = [""] * len(variants)
-            de_novo_indices = []
+            origin_candidate_indices = []
             for i, _variant in enumerate(variants):
                 annotation, detail = classify_inheritance(row_mother_statuses[i], row_father_statuses[i])
                 annotations.append(annotation)
                 details.append(detail)
-                if annotation == "de_novo":
-                    de_novo_indices.append(i)
-            for cluster in cluster_indices(de_novo_indices, variants, args.origin_window):
+                if annotation in {"de_novo", "uncertain"}:
+                    origin_candidate_indices.append(i)
+            for cluster in cluster_indices(origin_candidate_indices, variants, args.origin_window):
                 chrom = variants[cluster[0]][0]
                 cluster_start = min(variants[i][1] for i in cluster)
                 cluster_end = max(variants[i][1] + len(variants[i][2]) for i in cluster)
