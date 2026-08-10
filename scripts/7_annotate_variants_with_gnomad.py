@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 DEFAULT_BATCH_SIZE = 25
 DEFAULT_WORKERS = 8
 DEFAULT_FETCH_PADDING = 1
+DEFAULT_GNOMAD_VCF_TEMPLATE = "gnomad.joint.v4.1.sites.chr{chrom}.vcf.bgz"
 
 
 def normalize_variant_id(value):
@@ -38,6 +39,10 @@ def contig_aliases(chrom):
     return list(dict.fromkeys(aliases))
 
 
+def gnomad_vcf_path_for_chrom(vcf_dir, template, chrom):
+    return os.path.join(vcf_dir, template.format(chrom=chrom))
+
+
 def open_gnomad_vcf(vcf_path):
     cyvcf2_error = None
     try:
@@ -60,6 +65,13 @@ def open_gnomad_vcf(vcf_path):
         if cyvcf2_error is not None:
             raise SystemExit(f"Failed to open gnomAD VCF with cyvcf2 ({cyvcf2_error}) and pysam ({exc})")
         raise
+
+
+def ensure_indexed_vcf(vcf_path):
+    if not os.path.exists(vcf_path):
+        raise SystemExit(f"gnomAD VCF not found: {vcf_path}")
+    if not (os.path.exists(vcf_path + ".tbi") or os.path.exists(vcf_path + ".csi")):
+        raise SystemExit(f"Missing gnomAD VCF index for {vcf_path} (.tbi or .csi)")
 
 
 def close_gnomad_vcf(kind, reader):
@@ -197,11 +209,29 @@ def query_variant(kind, reader, variant_id):
 def query_batch(vcf_path, batch):
     if not batch:
         return {}
+    return _query_batch_single_vcf(vcf_path, batch)
+
+
+def _query_batch_single_vcf(vcf_path, batch):
+    ensure_indexed_vcf(vcf_path)
     kind, reader = open_gnomad_vcf(vcf_path)
     try:
         return {variant_id: query_variant(kind, reader, variant_id) for variant_id in batch}
     finally:
         close_gnomad_vcf(kind, reader)
+
+
+def query_batch_by_chrom(vcf_dir, template, batch):
+    if not batch:
+        return {}
+    grouped = {}
+    for variant_id in batch:
+        chrom = variant_id.split("-")[0]
+        grouped.setdefault(gnomad_vcf_path_for_chrom(vcf_dir, template, chrom), []).append(variant_id)
+    annotations = {}
+    for vcf_path, variant_ids in grouped.items():
+        annotations.update(_query_batch_single_vcf(vcf_path, variant_ids))
+    return annotations
 
 
 def chunked(values, size):
@@ -214,15 +244,19 @@ def main():
     parser.add_argument("--input-tsv", required=True, help="Input TSV containing a variant column")
     parser.add_argument("--variant-column", default="variant_id", help="Column containing chr:pos:ref:alt variant IDs, optionally semicolon-separated")
     parser.add_argument("--out", required=True, help="Annotated output TSV path")
-    parser.add_argument("--gnomad-vcf", required=True, help="Local bgzipped gnomAD VCF (.vcf.gz)")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--gnomad-vcf", help="Single local bgzipped gnomAD VCF (.vcf.gz)")
+    group.add_argument("--gnomad-vcf-dir", help="Directory containing chromosome-specific gnomAD VCFs")
+    parser.add_argument("--gnomad-vcf-template", default=DEFAULT_GNOMAD_VCF_TEMPLATE, help="Filename template under --gnomad-vcf-dir; use {chrom} for the chromosome name")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Number of unique variants to query per gnomAD request")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Number of query batches to run in parallel")
     args = parser.parse_args()
 
-    if not os.path.exists(args.gnomad_vcf):
-        raise SystemExit(f"gnomAD VCF not found: {args.gnomad_vcf}")
-    if not (os.path.exists(args.gnomad_vcf + ".tbi") or os.path.exists(args.gnomad_vcf + ".csi")):
-        raise SystemExit(f"Missing gnomAD VCF index for {args.gnomad_vcf} (.tbi or .csi)")
+    if args.gnomad_vcf:
+        ensure_indexed_vcf(args.gnomad_vcf)
+    else:
+        if not os.path.isdir(args.gnomad_vcf_dir):
+            raise SystemExit(f"gnomAD VCF directory not found: {args.gnomad_vcf_dir}")
 
     with open(args.input_tsv, newline="") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
@@ -252,10 +286,13 @@ def main():
 
     annotations = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        future_to_batch = {
-            pool.submit(query_batch, args.gnomad_vcf, batch): (i, batch)
-            for i, batch in enumerate(batches, start=1)
-        }
+        future_to_batch = {}
+        for i, batch in enumerate(batches, start=1):
+            if args.gnomad_vcf:
+                future = pool.submit(query_batch, args.gnomad_vcf, batch)
+            else:
+                future = pool.submit(query_batch_by_chrom, args.gnomad_vcf_dir, args.gnomad_vcf_template, batch)
+            future_to_batch[future] = (i, batch)
         for future in as_completed(future_to_batch):
             batch_index, batch = future_to_batch[future]
             print(f"Finished gnomAD batch {batch_index}/{len(batches)}", flush=True)
