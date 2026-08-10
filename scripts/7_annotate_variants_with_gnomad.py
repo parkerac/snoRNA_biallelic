@@ -176,7 +176,7 @@ def parse_variant_result(kind, record, fallback_id, variant_id):
     af = get_annotated_value(kind, record, ("AF_joint", "AF", "af"), alt_index=alt_index, numeric=float)
     if af is None:
         af = (ac / an) if an else 0.0
-    nhomalt = get_annotated_value(kind, record, ("NHOMALT_joint", "nhomalt", "NHOMALT", "n_homalt", "HOMALT", "homozygote_count"), alt_index=alt_index, numeric=int) or 0
+    nhomalt = get_annotated_value(kind, record, ("nhomalt_joint", "NHOMALT_joint", "nhomalt", "NHOMALT", "n_homalt", "HOMALT", "homozygote_count"), alt_index=alt_index, numeric=int) or 0
     return {
         "gnomad_variant_id": fallback_id,
         "gnomad_ac": ac,
