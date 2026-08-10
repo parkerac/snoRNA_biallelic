@@ -39,17 +39,27 @@ def contig_aliases(chrom):
 
 
 def open_gnomad_vcf(vcf_path):
+    cyvcf2_error = None
     try:
         from cyvcf2 import VCF
 
         return "cyvcf2", VCF(vcf_path)
-    except ImportError:
-        try:
-            import pysam
-        except ImportError as exc:
-            raise SystemExit("This script requires either cyvcf2 or pysam to query a local indexed VCF") from exc
+    except (ImportError, ValueError, OSError) as exc:
+        cyvcf2_error = exc
 
+    try:
+        import pysam
+    except ImportError as exc:
+        if cyvcf2_error is not None:
+            raise SystemExit(f"Failed to open gnomAD VCF with cyvcf2 ({cyvcf2_error}) and pysam is not installed") from exc
+        raise SystemExit("This script requires either cyvcf2 or pysam to query a local indexed VCF") from exc
+
+    try:
         return "pysam", pysam.VariantFile(vcf_path)
+    except Exception as exc:
+        if cyvcf2_error is not None:
+            raise SystemExit(f"Failed to open gnomAD VCF with cyvcf2 ({cyvcf2_error}) and pysam ({exc})")
+        raise
 
 
 def close_gnomad_vcf(kind, reader):
