@@ -154,8 +154,6 @@ def parse_variant_result(kind, record, fallback_id, variant_id):
     if record is None:
         return {
             "gnomad_variant_id": fallback_id,
-            "gnomad_ac": 0,
-            "gnomad_an": 0,
             "gnomad_af": 0.0,
             "gnomad_nhomalt": 0,
             "gnomad_lookup_status": "not_found",
@@ -164,23 +162,15 @@ def parse_variant_result(kind, record, fallback_id, variant_id):
     if not alts or variant_id[3] not in alts:
         return {
             "gnomad_variant_id": fallback_id,
-            "gnomad_ac": 0,
-            "gnomad_an": 0,
             "gnomad_af": 0.0,
             "gnomad_nhomalt": 0,
             "gnomad_lookup_status": "not_found",
         }
     alt_index = alts.index(variant_id[3])
-    ac = get_annotated_value(kind, record, ("AC_joint", "AC", "ac"), alt_index=alt_index, numeric=int) or 0
-    an = get_annotated_value(kind, record, ("AN_joint", "AN", "an"), alt_index=None, numeric=int) or 0
     af = get_annotated_value(kind, record, ("AF_joint", "AF", "af"), alt_index=alt_index, numeric=float)
-    if af is None:
-        af = (ac / an) if an else 0.0
     nhomalt = get_annotated_value(kind, record, ("nhomalt_joint", "NHOMALT_joint", "nhomalt", "NHOMALT", "n_homalt", "HOMALT", "homozygote_count"), alt_index=alt_index, numeric=int) or 0
     return {
         "gnomad_variant_id": fallback_id,
-        "gnomad_ac": ac,
-        "gnomad_an": an,
         "gnomad_af": af,
         "gnomad_nhomalt": nhomalt,
         "gnomad_lookup_status": "found",
@@ -298,7 +288,7 @@ def main():
             print(f"Finished gnomAD batch {batch_index}/{len(batches)}", flush=True)
             annotations.update(future.result())
 
-    output_fields = fieldnames + ["gnomad_variant_id", "gnomad_ac", "gnomad_an", "gnomad_af", "gnomad_nhomalt", "gnomad_lookup_status"]
+    output_fields = fieldnames + ["gnomad_variant_id", "gnomad_af", "gnomad_nhomalt", "gnomad_lookup_status"]
 
     with open(args.out, "w", newline="") as out_fh:
         writer = csv.DictWriter(out_fh, delimiter="\t", fieldnames=output_fields)
@@ -307,8 +297,6 @@ def main():
             anns = [annotations[variant_id] for variant_id in variant_ids]
             output_row = dict(row)
             output_row["gnomad_variant_id"] = ";".join(ann["gnomad_variant_id"] for ann in anns)
-            output_row["gnomad_ac"] = ";".join(str(ann["gnomad_ac"]) for ann in anns)
-            output_row["gnomad_an"] = ";".join(str(ann["gnomad_an"]) for ann in anns)
             output_row["gnomad_af"] = ";".join(str(ann["gnomad_af"]) for ann in anns)
             output_row["gnomad_nhomalt"] = ";".join(str(ann["gnomad_nhomalt"]) for ann in anns)
             output_row["gnomad_lookup_status"] = ";".join(ann["gnomad_lookup_status"] for ann in anns)

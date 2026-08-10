@@ -96,7 +96,7 @@ python scripts/7_annotate_variants_with_gnomad.py \
   --workers 8
 ```
 
-This queries each unique variant only once, runs batches in parallel, and adds gnomAD `ac`, `an`, `af`, and `nhomalt` columns. If the input variant column contains semicolon-separated variants, the output gnomAD columns will use the same semicolon-separated structure. The default file name pattern under `--gnomad-vcf-dir` is `gnomad.joint.v4.1.sites.chr{chrom}.vcf.bgz`, where `{chrom}` is the chromosome without the `chr` prefix. Override this with `--gnomad-vcf-template` if your file names differ. You can also still pass a single `--gnomad-vcf` path if you prefer.
+This queries each unique variant only once, runs batches in parallel, and adds gnomAD `af` and `nhomalt` columns. If the input variant column contains semicolon-separated variants, the output gnomAD columns will use the same semicolon-separated structure. The default file name pattern under `--gnomad-vcf-dir` is `gnomad.joint.v4.1.sites.chr{chrom}.vcf.bgz`, where `{chrom}` is the chromosome without the `chr` prefix. Override this with `--gnomad-vcf-template` if your file names differ. You can also still pass a single `--gnomad-vcf` path if you prefer.
 
 To prepare those double-het rows for phasing with the local script, run:
 
