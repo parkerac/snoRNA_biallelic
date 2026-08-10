@@ -159,12 +159,12 @@ def parse_variant_result(kind, record, fallback_id, variant_id):
             "gnomad_lookup_status": "not_found",
         }
     alt_index = alts.index(variant_id[3])
-    ac = get_annotated_value(kind, record, ("AC", "ac"), alt_index=alt_index, numeric=int) or 0
-    an = get_annotated_value(kind, record, ("AN", "an"), alt_index=None, numeric=int) or 0
-    af = get_annotated_value(kind, record, ("AF", "af"), alt_index=alt_index, numeric=float)
+    ac = get_annotated_value(kind, record, ("AC_joint", "AC", "ac"), alt_index=alt_index, numeric=int) or 0
+    an = get_annotated_value(kind, record, ("AN_joint", "AN", "an"), alt_index=None, numeric=int) or 0
+    af = get_annotated_value(kind, record, ("AF_joint", "AF", "af"), alt_index=alt_index, numeric=float)
     if af is None:
         af = (ac / an) if an else 0.0
-    nhomalt = get_annotated_value(kind, record, ("nhomalt", "NHOMALT", "n_homalt"), alt_index=alt_index, numeric=int) or 0
+    nhomalt = get_annotated_value(kind, record, ("NHOMALT_joint", "nhomalt", "NHOMALT", "n_homalt", "HOMALT", "homozygote_count"), alt_index=alt_index, numeric=int) or 0
     return {
         "gnomad_variant_id": fallback_id,
         "gnomad_ac": ac,
