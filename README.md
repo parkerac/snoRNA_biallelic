@@ -13,7 +13,7 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 - Merges nearby genes into shared fetch windows so each shard is queried fewer times.
 - `5_prepare_double_het_phasing_tsv.py` expands the double-het summary into pairwise variant rows and joins sample-specific file paths for phasing.
 - `6_phase_nearby_variants.py` phases those pairwise variant rows from local BAM/CRAM evidence.
-- `7_annotate_variants_with_gnomad.py` adds gnomAD `ac`, `an`, `af`, and `nhomalt` annotations to a variant TSV.
+- `7_annotate_variants_with_gnomad.py` adds gnomAD `ac`, `an`, `af`, and `nhomalt` annotations to a variant TSV from a local indexed gnomAD VCF.
 - `8_annotate_single_variant_inheritance.py` labels a single candidate variant as `inherited`, `de_novo`, or `uncertain`.
 - `9_hpo_case_control_enrichment.py` tests case-control HPO enrichment after expanding annotations to all ancestors.
 
@@ -91,11 +91,12 @@ To annotate a variant TSV with gnomAD frequency and homozygote count, run:
 python scripts/7_annotate_variants_with_gnomad.py \
   --input-tsv outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.tsv \
   --variant-column variant_id \
+  --gnomad-vcf /path/to/gnomad.vcf.gz \
   --out outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.gnomad.tsv \
   --workers 8
 ```
 
-This queries each unique variant only once, runs batches in parallel, and adds gnomAD `ac`, `an`, `af`, and `nhomalt` columns. If the input variant column contains semicolon-separated variants, the output gnomAD columns will use the same semicolon-separated structure. The default dataset is `gnomad_r4`; use another `--dataset` if you need a different gnomAD release.
+This queries each unique variant only once, runs batches in parallel, and adds gnomAD `ac`, `an`, `af`, and `nhomalt` columns. If the input variant column contains semicolon-separated variants, the output gnomAD columns will use the same semicolon-separated structure. The local VCF must be bgzipped and indexed with `.tbi` or `.csi`.
 
 To prepare those double-het rows for phasing with the local script, run:
 

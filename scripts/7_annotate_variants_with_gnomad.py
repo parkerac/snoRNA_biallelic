@@ -3,50 +3,13 @@
 
 import argparse
 import csv
-import json
-import re
-import time
 import os
-import ssl
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
-
-GNOMAD_API_URL = "https://gnomad.broadinstitute.org/api"
-DEFAULT_DATASET = "gnomad_r4"
 DEFAULT_BATCH_SIZE = 25
 DEFAULT_WORKERS = 8
-DEFAULT_SLEEP_SECONDS = 6
-DEFAULT_RETRIES = 3
-MAX_GRAPHQL_BATCH = 25
-SSL_CONTEXT = ssl.create_default_context()
-
-
-def configure_ssl_certs():
-    try:
-        import certifi
-    except ImportError:
-        return
-    bundle = certifi.where()
-    os.environ.setdefault("SSL_CERT_FILE", bundle)
-    os.environ.setdefault("REQUESTS_CA_BUNDLE", bundle)
-    global SSL_CONTEXT
-    SSL_CONTEXT = ssl.create_default_context(cafile=bundle)
-
-
-def scalar_int(value):
-    try:
-        return int(value)
-    except Exception:
-        return 0
-
-
-def scalar_float(value):
-    try:
-        return float(value)
-    except Exception:
-        return None
+DEFAULT_FETCH_PADDING = 1
 
 
 def normalize_variant_id(value):
@@ -67,91 +30,98 @@ def split_variant_values(value):
     return [item.strip() for item in str(value).split(";") if item.strip()]
 
 
-def build_query(batch, dataset):
-    lines = ["query VariantBatch($dataset: DatasetId!) {"]
-    for i, variant_id in enumerate(batch):
-        alias = f"v{i}"
-        lines.append(
-            f'  {alias}: variant(variantId: {json.dumps(variant_id)}, dataset: $dataset) '
-            "{ variantId joint { ac an af nhomalt } }"
-        )
-    lines.append("}")
-    return "\n".join(lines)
+def open_gnomad_vcf(vcf_path):
+    try:
+        from cyvcf2 import VCF
 
-
-def post_query(api_url, query, dataset):
-    payload = json.dumps({"query": query, "variables": {"dataset": dataset}}).encode()
-    request = Request(
-        api_url,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0",
-        },
-    )
-    with urlopen(request, context=SSL_CONTEXT) as response:
-        return json.loads(response.read().decode())
-
-
-def query_batch(api_url, dataset, batch, retries, sleep_seconds):
-    if not batch:
-        return {}
-    if len(batch) > MAX_GRAPHQL_BATCH:
-        raise ValueError(f"batch size cannot exceed {MAX_GRAPHQL_BATCH}")
-
-    query = build_query(batch, dataset)
-    last_error = None
-    for attempt in range(retries):
+        return "cyvcf2", VCF(vcf_path)
+    except ImportError:
         try:
-            result = post_query(api_url, query, dataset)
-            if result.get("errors"):
-                last_error = result["errors"]
-                break
-            data = result.get("data") or {}
-            return {
-                variant_id: parse_variant_result(data.get(f"v{i}"), variant_id)
-                for i, variant_id in enumerate(batch)
-            }
-        except HTTPError as exc:
-            last_error = f"HTTP {exc.code}: {exc.read().decode(errors='replace')}"
-            if exc.code in {403, 429, 500, 502, 503, 504} and attempt < retries - 1:
-                time.sleep(sleep_seconds * (attempt + 1))
-                continue
-            break
-        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
-            last_error = str(exc)
-            if attempt < retries - 1:
-                time.sleep(sleep_seconds * (attempt + 1))
-                continue
-            break
+            import pysam
+        except ImportError as exc:
+            raise SystemExit("This script requires either cyvcf2 or pysam to query a local indexed VCF") from exc
 
-    if len(batch) == 1:
-        variant_id = batch[0]
-        return {
-            variant_id: {
-                "gnomad_variant_id": variant_id,
-                "gnomad_ac": 0,
-                "gnomad_an": 0,
-                "gnomad_af": 0.0,
-                "gnomad_nhomalt": 0,
-                "gnomad_lookup_status": f"error:{last_error}" if last_error else "error",
-            }
-        }
-
-    mid = len(batch) // 2
-    left = query_batch(api_url, dataset, batch[:mid], retries, sleep_seconds)
-    right = query_batch(api_url, dataset, batch[mid:], retries, sleep_seconds)
-    left.update(right)
-    return left
+        return "pysam", pysam.VariantFile(vcf_path)
 
 
-def chunked(values, size):
-    for start in range(0, len(values), size):
-        yield values[start : start + size]
+def close_gnomad_vcf(kind, reader):
+    close = getattr(reader, "close", None)
+    if callable(close):
+        close()
 
 
-def parse_variant_result(payload, fallback_id):
-    if not payload or payload.get("variant") is None:
+def reader_contigs(kind, reader):
+    if kind == "cyvcf2":
+        return set(reader.seqnames)
+    return set(reader.header.contigs)
+
+
+def fetch_region_records(kind, reader, chrom, start, end):
+    if kind == "cyvcf2":
+        region = f"{chrom}:{max(1, start)}-{end}"
+        return list(reader(region))
+    return list(reader.fetch(chrom, max(0, start - 1), end))
+
+
+def record_contig(kind, record):
+    return record.CHROM if kind == "cyvcf2" else record.chrom
+
+
+def record_pos(kind, record):
+    return int(record.POS if kind == "cyvcf2" else record.pos)
+
+
+def record_ref(kind, record):
+    return str(record.REF if kind == "cyvcf2" else record.ref).upper()
+
+
+def record_alts(kind, record):
+    values = record.ALT if kind == "cyvcf2" else record.alts
+    return [str(value).upper() for value in (values or []) if value and value != "."]
+
+
+def record_info(kind, record, key):
+    if kind == "cyvcf2":
+        info = record.INFO
+        return info.get(key) if hasattr(info, "get") else getattr(info, key, None)
+    info = record.info
+    return info.get(key) if hasattr(info, "get") else getattr(info, key, None)
+
+
+def coerce_info_value(value, alt_index=None):
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        if alt_index is not None and alt_index < len(value):
+            return value[alt_index]
+        return value[0]
+    if isinstance(value, str) and "," in value:
+        parts = [part for part in value.split(",") if part != ""]
+        if not parts:
+            return None
+        if alt_index is not None and alt_index < len(parts):
+            value = parts[alt_index]
+        else:
+            value = parts[0]
+    return value
+
+
+def get_annotated_value(kind, record, keys, alt_index=None, numeric=float):
+    for key in keys:
+        value = coerce_info_value(record_info(kind, record, key), alt_index=alt_index)
+        if value is None:
+            continue
+        try:
+            return numeric(value)
+        except Exception:
+            continue
+    return None
+
+
+def parse_variant_result(kind, record, fallback_id, variant_id):
+    if record is None:
         return {
             "gnomad_variant_id": fallback_id,
             "gnomad_ac": 0,
@@ -160,36 +130,81 @@ def parse_variant_result(payload, fallback_id):
             "gnomad_nhomalt": 0,
             "gnomad_lookup_status": "not_found",
         }
-    variant = payload["variant"]
-    joint = variant.get("joint") or {}
-    ac = scalar_int(joint.get("ac"))
-    an = scalar_int(joint.get("an"))
-    af = scalar_float(joint.get("af"))
+    alts = record_alts(kind, record)
+    if not alts or variant_id[3] not in alts:
+        return {
+            "gnomad_variant_id": fallback_id,
+            "gnomad_ac": 0,
+            "gnomad_an": 0,
+            "gnomad_af": 0.0,
+            "gnomad_nhomalt": 0,
+            "gnomad_lookup_status": "not_found",
+        }
+    alt_index = alts.index(variant_id[3])
+    ac = get_annotated_value(kind, record, ("AC", "ac"), alt_index=alt_index, numeric=int) or 0
+    an = get_annotated_value(kind, record, ("AN", "an"), alt_index=None, numeric=int) or 0
+    af = get_annotated_value(kind, record, ("AF", "af"), alt_index=alt_index, numeric=float)
     if af is None:
         af = (ac / an) if an else 0.0
+    nhomalt = get_annotated_value(kind, record, ("nhomalt", "NHOMALT", "n_homalt"), alt_index=alt_index, numeric=int) or 0
     return {
-        "gnomad_variant_id": variant.get("variantId") or fallback_id,
+        "gnomad_variant_id": fallback_id,
         "gnomad_ac": ac,
         "gnomad_an": an,
         "gnomad_af": af,
-        "gnomad_nhomalt": scalar_int(joint.get("nhomalt")),
+        "gnomad_nhomalt": nhomalt,
         "gnomad_lookup_status": "found",
     }
 
 
+def query_variant(kind, reader, variant_id):
+    chrom, pos, ref, alt = variant_id.split("-")
+    pos = int(pos)
+    start = max(1, pos - DEFAULT_FETCH_PADDING)
+    end = pos + len(ref) + DEFAULT_FETCH_PADDING
+    for alias in contig_aliases(chrom):
+        if alias not in reader_contigs(kind, reader):
+            continue
+        for record in fetch_region_records(kind, reader, alias, start, end):
+            if record_contig(kind, record) not in contig_aliases(chrom):
+                continue
+            if record_pos(kind, record) != pos:
+                continue
+            if record_ref(kind, record) != ref:
+                continue
+            return parse_variant_result(kind, record, variant_id, (chrom, pos, ref, alt))
+    return parse_variant_result(kind, None, variant_id, (chrom, pos, ref, alt))
+
+
+def query_batch(vcf_path, batch):
+    if not batch:
+        return {}
+    kind, reader = open_gnomad_vcf(vcf_path)
+    try:
+        return {variant_id: query_variant(kind, reader, variant_id) for variant_id in batch}
+    finally:
+        close_gnomad_vcf(kind, reader)
+
+
+def chunked(values, size):
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
+
+
 def main():
-    configure_ssl_certs()
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-tsv", required=True, help="Input TSV containing a variant column")
     parser.add_argument("--variant-column", default="variant_id", help="Column containing chr:pos:ref:alt variant IDs, optionally semicolon-separated")
     parser.add_argument("--out", required=True, help="Annotated output TSV path")
-    parser.add_argument("--dataset", default=DEFAULT_DATASET, help="gnomAD dataset id, for example gnomad_r4")
+    parser.add_argument("--gnomad-vcf", required=True, help="Local bgzipped gnomAD VCF (.vcf.gz)")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Number of unique variants to query per gnomAD request")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Number of query batches to run in parallel")
-    parser.add_argument("--sleep-seconds", type=float, default=DEFAULT_SLEEP_SECONDS, help="Seconds to wait between failed retries")
-    parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Retry count for gnomAD requests")
-    parser.add_argument("--api-url", default=GNOMAD_API_URL, help="gnomAD GraphQL endpoint")
     args = parser.parse_args()
+
+    if not os.path.exists(args.gnomad_vcf):
+        raise SystemExit(f"gnomAD VCF not found: {args.gnomad_vcf}")
+    if not (os.path.exists(args.gnomad_vcf + ".tbi") or os.path.exists(args.gnomad_vcf + ".csi")):
+        raise SystemExit(f"Missing gnomAD VCF index for {args.gnomad_vcf} (.tbi or .csi)")
 
     with open(args.input_tsv, newline="") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
@@ -215,12 +230,12 @@ def main():
 
     batches = list(chunked(unique_variants, args.batch_size))
     workers = max(1, min(args.workers, len(batches) or 1))
-    print(f"Querying gnomAD in {len(batches)} batches with {workers} workers", flush=True)
+    print(f"Querying local gnomAD VCF in {len(batches)} batches with {workers} workers", flush=True)
 
     annotations = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
         future_to_batch = {
-            pool.submit(query_batch, args.api_url, args.dataset, batch, args.retries, args.sleep_seconds): (i, batch)
+            pool.submit(query_batch, args.gnomad_vcf, batch): (i, batch)
             for i, batch in enumerate(batches, start=1)
         }
         for future in as_completed(future_to_batch):
