@@ -30,6 +30,14 @@ def split_variant_values(value):
     return [item.strip() for item in str(value).split(";") if item.strip()]
 
 
+def contig_aliases(chrom):
+    aliases = [chrom]
+    aliases.append(chrom[3:] if chrom.startswith("chr") else f"chr{chrom}")
+    if chrom in {"M", "MT", "chrM", "chrMT"}:
+        aliases.extend(["M", "MT", "chrM", "chrMT"])
+    return list(dict.fromkeys(aliases))
+
+
 def open_gnomad_vcf(vcf_path):
     try:
         from cyvcf2 import VCF
