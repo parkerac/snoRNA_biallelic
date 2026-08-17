@@ -107,7 +107,22 @@ def record_ref(kind, record):
 
 def record_alts(kind, record):
     values = record.ALT if kind == "cyvcf2" else record.alts
-    return [str(value).upper() for value in (values or []) if value and value != "."]
+    # Normalize ALT values; handle bytes/bytearray and other container types
+    alts = []
+    for value in (values or []):
+        if value is None or value == ".":
+            continue
+        try:
+            if isinstance(value, (bytes, bytearray)):
+                v = value.decode()
+            else:
+                v = str(value)
+        except Exception:
+            v = str(value)
+        v = v.upper()
+        if v:
+            alts.append(v)
+    return alts
 
 
 def record_info(kind, record, key):
@@ -115,18 +130,56 @@ def record_info(kind, record, key):
         info = record.INFO
         return info.get(key) if hasattr(info, "get") else getattr(info, key, None)
     info = record.info
-    return info.get(key) if hasattr(info, "get") else getattr(info, key, None)
+    # For pysam VariantRecord.info this is typically a dict-like mapping.
+    val = info.get(key) if hasattr(info, "get") else getattr(info, key, None)
+    # decode bytes to str to make downstream parsing consistent
+    if isinstance(val, (bytes, bytearray)):
+        try:
+            return val.decode()
+        except Exception:
+            return str(val)
+    return val
 
 
 def coerce_info_value(value, alt_index=None):
     if value is None:
         return None
+
+    # Handle bytes/bytearray
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode()
+        except Exception:
+            value = str(value)
+
+    # Convert numpy arrays or other array-like containers to list
+    try:
+        import numpy as _np
+
+        if isinstance(value, _np.ndarray):
+            value = value.tolist()
+    except Exception:
+        pass
+
+    # Handle list/tuple-like values (per-allele annotations)
     if isinstance(value, (list, tuple)):
         if not value:
             return None
-        if alt_index is not None and alt_index < len(value):
-            return value[alt_index]
-        return value[0]
+        # decode bytes inside containers
+        converted = []
+        for v in value:
+            if isinstance(v, (bytes, bytearray)):
+                try:
+                    converted.append(v.decode())
+                except Exception:
+                    converted.append(str(v))
+            else:
+                converted.append(v)
+        if alt_index is not None and alt_index < len(converted):
+            return converted[alt_index]
+        return converted[0]
+
+    # Strings with comma-separated values (sometimes used for per-allele fields)
     if isinstance(value, str) and "," in value:
         parts = [part for part in value.split(",") if part != ""]
         if not parts:
@@ -135,6 +188,7 @@ def coerce_info_value(value, alt_index=None):
             value = parts[alt_index]
         else:
             value = parts[0]
+
     return value
 
 
@@ -146,7 +200,11 @@ def get_annotated_value(kind, record, keys, alt_index=None, numeric=float):
         try:
             return numeric(value)
         except Exception:
-            continue
+            # try converting via str() (handles numpy scalar types, etc.)
+            try:
+                return numeric(str(value))
+            except Exception:
+                continue
     return None
 
 
