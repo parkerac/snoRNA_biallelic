@@ -12,6 +12,9 @@ DEFAULT_WORKERS = 8
 DEFAULT_FETCH_PADDING = 1
 DEFAULT_GNOMAD_VCF_TEMPLATE = "gnomad.joint.v4.1.sites.chr{chrom}.vcf.bgz"
 
+# Toggle detailed debug output when set by CLI
+DEBUG = False
+
 
 def normalize_variant_id(value):
     value = str(value).strip()
@@ -44,27 +47,15 @@ def gnomad_vcf_path_for_chrom(vcf_dir, template, chrom):
 
 
 def open_gnomad_vcf(vcf_path):
-    cyvcf2_error = None
-    try:
-        from cyvcf2 import VCF
-
-        return "cyvcf2", VCF(vcf_path)
-    except (ImportError, ValueError, OSError) as exc:
-        cyvcf2_error = exc
-
     try:
         import pysam
     except ImportError as exc:
-        if cyvcf2_error is not None:
-            raise SystemExit(f"Failed to open gnomAD VCF with cyvcf2 ({cyvcf2_error}) and pysam is not installed") from exc
-        raise SystemExit("This script requires either cyvcf2 or pysam to query a local indexed VCF") from exc
+        raise SystemExit("This script requires pysam to query a local indexed VCF") from exc
 
     try:
-        return "pysam", pysam.VariantFile(vcf_path)
+        return pysam.VariantFile(vcf_path)
     except Exception as exc:
-        if cyvcf2_error is not None:
-            raise SystemExit(f"Failed to open gnomAD VCF with cyvcf2 ({cyvcf2_error}) and pysam ({exc})")
-        raise
+        raise SystemExit(f"Failed to open gnomAD VCF with pysam ({exc})")
 
 
 def ensure_indexed_vcf(vcf_path):
@@ -74,39 +65,34 @@ def ensure_indexed_vcf(vcf_path):
         raise SystemExit(f"Missing gnomAD VCF index for {vcf_path} (.tbi or .csi)")
 
 
-def close_gnomad_vcf(kind, reader):
+def close_gnomad_vcf(reader):
     close = getattr(reader, "close", None)
     if callable(close):
         close()
 
 
-def reader_contigs(kind, reader):
-    if kind == "cyvcf2":
-        return set(reader.seqnames)
+def reader_contigs(reader):
     return set(reader.header.contigs)
 
 
-def fetch_region_records(kind, reader, chrom, start, end):
-    if kind == "cyvcf2":
-        region = f"{chrom}:{max(1, start)}-{end}"
-        return list(reader(region))
+def fetch_region_records(reader, chrom, start, end):
     return list(reader.fetch(chrom, max(0, start - 1), end))
 
 
-def record_contig(kind, record):
-    return record.CHROM if kind == "cyvcf2" else record.chrom
+def record_contig(record):
+    return record.chrom
 
 
-def record_pos(kind, record):
-    return int(record.POS if kind == "cyvcf2" else record.pos)
+def record_pos(record):
+    return int(record.pos)
 
 
-def record_ref(kind, record):
-    return str(record.REF if kind == "cyvcf2" else record.ref).upper()
+def record_ref(record):
+    return str(record.ref).upper()
 
 
-def record_alts(kind, record):
-    values = record.ALT if kind == "cyvcf2" else record.alts
+def record_alts(record):
+    values = record.alts
     # Normalize ALT values; handle bytes/bytearray and other container types
     alts = []
     for value in (values or []):
@@ -125,14 +111,9 @@ def record_alts(kind, record):
     return alts
 
 
-def record_info(kind, record, key):
-    if kind == "cyvcf2":
-        info = record.INFO
-        return info.get(key) if hasattr(info, "get") else getattr(info, key, None)
+def record_info(record, key):
     info = record.info
-    # For pysam VariantRecord.info this is typically a dict-like mapping.
     val = info.get(key) if hasattr(info, "get") else getattr(info, key, None)
-    # decode bytes to str to make downstream parsing consistent
     if isinstance(val, (bytes, bytearray)):
         try:
             return val.decode()
@@ -192,15 +173,14 @@ def coerce_info_value(value, alt_index=None):
     return value
 
 
-def get_annotated_value(kind, record, keys, alt_index=None, numeric=float):
+def get_annotated_value(record, keys, alt_index=None, numeric=float):
     for key in keys:
-        value = coerce_info_value(record_info(kind, record, key), alt_index=alt_index)
+        value = coerce_info_value(record_info(record, key), alt_index=alt_index)
         if value is None:
             continue
         try:
             return numeric(value)
         except Exception:
-            # try converting via str() (handles numpy scalar types, etc.)
             try:
                 return numeric(str(value))
             except Exception:
@@ -208,7 +188,7 @@ def get_annotated_value(kind, record, keys, alt_index=None, numeric=float):
     return None
 
 
-def parse_variant_result(kind, record, fallback_id, variant_id):
+def parse_variant_result(record, fallback_id, variant_id):
     if record is None:
         return {
             "gnomad_variant_id": fallback_id,
@@ -216,7 +196,7 @@ def parse_variant_result(kind, record, fallback_id, variant_id):
             "gnomad_nhomalt": 0,
             "gnomad_lookup_status": "not_found",
         }
-    alts = record_alts(kind, record)
+    alts = record_alts(record)
     if not alts or variant_id[3] not in alts:
         return {
             "gnomad_variant_id": fallback_id,
@@ -225,8 +205,8 @@ def parse_variant_result(kind, record, fallback_id, variant_id):
             "gnomad_lookup_status": "not_found",
         }
     alt_index = alts.index(variant_id[3])
-    af = get_annotated_value(kind, record, ("AF_joint", "AF", "af"), alt_index=alt_index, numeric=float)
-    nhomalt = get_annotated_value(kind, record, ("nhomalt_joint", "NHOMALT_joint", "nhomalt", "NHOMALT", "n_homalt", "HOMALT", "homozygote_count"), alt_index=alt_index, numeric=int) or 0
+    af = get_annotated_value(record, ("AF_joint", "AF", "af"), alt_index=alt_index, numeric=float)
+    nhomalt = get_annotated_value(record, ("nhomalt_joint", "NHOMALT_joint", "nhomalt", "NHOMALT", "n_homalt", "HOMALT", "homozygote_count"), alt_index=alt_index, numeric=int) or 0
     return {
         "gnomad_variant_id": fallback_id,
         "gnomad_af": af,
@@ -235,23 +215,40 @@ def parse_variant_result(kind, record, fallback_id, variant_id):
     }
 
 
-def query_variant(kind, reader, variant_id):
+def query_variant(reader, variant_id):
     chrom, pos, ref, alt = variant_id.split("-")
     pos = int(pos)
     start = max(1, pos - DEFAULT_FETCH_PADDING)
     end = pos + len(ref) + DEFAULT_FETCH_PADDING
     for alias in contig_aliases(chrom):
-        if alias not in reader_contigs(kind, reader):
+        if alias not in reader_contigs(reader):
             continue
-        for record in fetch_region_records(kind, reader, alias, start, end):
-            if record_contig(kind, record) not in contig_aliases(chrom):
+        for record in fetch_region_records(reader, alias, start, end):
+            if DEBUG:
+                try:
+                    info_keys = list(record.info.keys()) if hasattr(record.info, 'keys') else []
+                except Exception:
+                    info_keys = []
+                print(f"DEBUG: fetched record: CHROM={record.chrom} POS={record.pos} REF={record.ref} ALTS={record.alts} INFO_KEYS={info_keys}")
+            if record_contig(record) not in contig_aliases(chrom):
+                if DEBUG:
+                    print(f"DEBUG: skipping record on contig mismatch: {record.chrom} not in {contig_aliases(chrom)}")
                 continue
-            if record_pos(kind, record) != pos:
+            if record_pos(record) != pos:
+                if DEBUG:
+                    print(f"DEBUG: skipping record at POS={record.pos} (want {pos})")
                 continue
-            if record_ref(kind, record) != ref:
+            if record_ref(record) != ref:
+                if DEBUG:
+                    print(f"DEBUG: REF mismatch: record REF={record_ref(record)} vs want {ref}")
                 continue
-            return parse_variant_result(kind, record, variant_id, (chrom, pos, ref, alt))
-    return parse_variant_result(kind, None, variant_id, (chrom, pos, ref, alt))
+            # At this point position and REF match; parse
+            result = parse_variant_result(record, variant_id, (chrom, pos, ref, alt))
+            if result["gnomad_lookup_status"] == "found":
+                return result
+            if DEBUG:
+                print(f"DEBUG: ALT {alt} not found in record ALTS={record_alts(record)}")
+    return parse_variant_result(None, variant_id, (chrom, pos, ref, alt))
 
 
 def query_batch(vcf_path, batch):
@@ -262,11 +259,11 @@ def query_batch(vcf_path, batch):
 
 def _query_batch_single_vcf(vcf_path, batch):
     ensure_indexed_vcf(vcf_path)
-    kind, reader = open_gnomad_vcf(vcf_path)
+    reader = open_gnomad_vcf(vcf_path)
     try:
-        return {variant_id: query_variant(kind, reader, variant_id) for variant_id in batch}
+        return {variant_id: query_variant(reader, variant_id) for variant_id in batch}
     finally:
-        close_gnomad_vcf(kind, reader)
+        close_gnomad_vcf(reader)
 
 
 def query_batch_by_chrom(vcf_dir, template, batch):
@@ -298,7 +295,11 @@ def main():
     parser.add_argument("--gnomad-vcf-template", default=DEFAULT_GNOMAD_VCF_TEMPLATE, help="Filename template under --gnomad-vcf-dir; use {chrom} for the chromosome name")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Number of unique variants to query per gnomAD request")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Number of query batches to run in parallel")
+    parser.add_argument("--debug", action="store_true", help="Enable debug output to help diagnose matching issues")
     args = parser.parse_args()
+
+    global DEBUG
+    DEBUG = bool(getattr(args, "debug", False))
 
     if args.gnomad_vcf:
         ensure_indexed_vcf(args.gnomad_vcf)
