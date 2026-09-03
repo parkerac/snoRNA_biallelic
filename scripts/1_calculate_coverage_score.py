@@ -22,7 +22,7 @@ def open_text(path):
 
 def gene_type_matches(gene_type, wanted):
     gene_type_lc = str(gene_type).lower()
-    if wanted == {"trna"}:
+    if wanted & {"trna", "lncrna"} and gene_type_lc in {"trna", "lncrna"}:
         return True
     if gene_type_lc in wanted:
         return True
