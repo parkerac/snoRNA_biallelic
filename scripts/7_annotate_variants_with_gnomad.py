@@ -85,7 +85,7 @@ def open_gnomad_vcf(vcf_path):
             *header_preview,
             "Common causes: bad/corrupt header, wrong file path, stale or missing index, or a file that is not a valid bgzipped VCF.",
         ]
-        raise SystemExit("\n".join(message))
+        raise RuntimeError("\n".join(message))
 
 
 def ensure_indexed_vcf(vcf_path):
@@ -289,8 +289,13 @@ def query_batch(vcf_path, batch):
 
 
 def _query_batch_single_vcf(vcf_path, batch):
-    ensure_indexed_vcf(vcf_path)
-    reader = open_gnomad_vcf(vcf_path)
+    try:
+        ensure_indexed_vcf(vcf_path)
+        reader = open_gnomad_vcf(vcf_path)
+    except Exception as exc:
+        print(f"WARNING: skipping VCF {vcf_path} because it could not be read: {exc}", flush=True)
+        debug_print(f"VCF failure for {vcf_path}")
+        return failed_annotations(batch, "vcf_error")
     try:
         return {variant_id: query_variant(reader, variant_id) for variant_id in batch}
     finally:
@@ -313,6 +318,18 @@ def query_batch_by_chrom(vcf_dir, template, batch):
 def chunked(values, size):
     for start in range(0, len(values), size):
         yield values[start : start + size]
+
+
+def failed_annotations(batch, status):
+    return {
+        variant_id: {
+            "gnomad_variant_id": variant_id,
+            "gnomad_af": 0.0,
+            "gnomad_nhomalt": 0,
+            "gnomad_lookup_status": status,
+        }
+        for variant_id in batch
+    }
 
 
 def main():
@@ -380,7 +397,12 @@ def main():
         for future in as_completed(future_to_batch):
             batch_index, batch = future_to_batch[future]
             print(f"Finished gnomAD batch {batch_index}/{len(batches)}", flush=True)
-            batch_annotations = future.result()
+            try:
+                batch_annotations = future.result()
+            except Exception as exc:
+                print(f"WARNING: batch {batch_index}/{len(batches)} failed: {exc}", flush=True)
+                debug_print(f"batch {batch_index}/{len(batches)} exception")
+                batch_annotations = failed_annotations(batch, "query_error")
             debug_print(f"batch {batch_index}/{len(batches)} returned {len(batch_annotations)} annotations")
             annotations.update(batch_annotations)
 
