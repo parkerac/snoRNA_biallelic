@@ -297,7 +297,15 @@ def _query_batch_single_vcf(vcf_path, batch):
         debug_print(f"VCF failure for {vcf_path}")
         return failed_annotations(batch, "vcf_error")
     try:
-        return {variant_id: query_variant(reader, variant_id) for variant_id in batch}
+        annotations = {}
+        for variant_id in batch:
+            try:
+                annotations[variant_id] = query_variant(reader, variant_id)
+            except Exception as exc:
+                print(f"WARNING: skipping variant {variant_id} in {vcf_path} because it could not be read: {exc}", flush=True)
+                debug_print(f"variant failure for {variant_id}")
+                annotations[variant_id] = failed_annotations([variant_id], "query_error")[variant_id]
+        return annotations
     finally:
         close_gnomad_vcf(reader)
 
