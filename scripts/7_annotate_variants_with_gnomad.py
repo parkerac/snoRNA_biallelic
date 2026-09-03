@@ -3,6 +3,7 @@
 
 import argparse
 import csv
+import gzip
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,6 +15,11 @@ DEFAULT_GNOMAD_VCF_TEMPLATE = "gnomad.joint.v4.1.sites.chr{chrom}.vcf.bgz"
 
 # Toggle detailed debug output when set by CLI
 DEBUG = False
+
+
+def debug_print(message):
+    if DEBUG:
+        print(f"DEBUG: {message}", flush=True)
 
 
 def normalize_variant_id(value):
@@ -46,6 +52,21 @@ def gnomad_vcf_path_for_chrom(vcf_dir, template, chrom):
     return os.path.join(vcf_dir, template.format(chrom=chrom))
 
 
+def preview_vcf_header(vcf_path, max_lines=10):
+    try:
+        opener = gzip.open if vcf_path.endswith((".gz", ".bgz", ".bgzf")) else open
+        with opener(vcf_path, "rt", errors="replace") as fh:
+            lines = []
+            for _ in range(max_lines):
+                line = fh.readline()
+                if not line:
+                    break
+                lines.append(line.rstrip("\n"))
+            return lines
+    except Exception as exc:
+        return [f"<failed to read header preview: {exc}>"]
+
+
 def open_gnomad_vcf(vcf_path):
     try:
         import pysam
@@ -53,9 +74,18 @@ def open_gnomad_vcf(vcf_path):
         raise SystemExit("This script requires pysam to query a local indexed VCF") from exc
 
     try:
+        debug_print(f"opening VCF {vcf_path}")
         return pysam.VariantFile(vcf_path)
     except Exception as exc:
-        raise SystemExit(f"Failed to open gnomAD VCF with pysam ({exc})")
+        header_preview = preview_vcf_header(vcf_path)
+        message = [
+            f"Failed to open gnomAD VCF with pysam: {exc}",
+            f"VCF path: {vcf_path}",
+            "Header preview:",
+            *header_preview,
+            "Common causes: bad/corrupt header, wrong file path, stale or missing index, or a file that is not a valid bgzipped VCF.",
+        ]
+        raise SystemExit("\n".join(message))
 
 
 def ensure_indexed_vcf(vcf_path):
@@ -63,6 +93,7 @@ def ensure_indexed_vcf(vcf_path):
         raise SystemExit(f"gnomAD VCF not found: {vcf_path}")
     if not (os.path.exists(vcf_path + ".tbi") or os.path.exists(vcf_path + ".csi")):
         raise SystemExit(f"Missing gnomAD VCF index for {vcf_path} (.tbi or .csi)")
+    debug_print(f"found VCF and index for {vcf_path}")
 
 
 def close_gnomad_vcf(reader):
@@ -332,6 +363,10 @@ def main():
     batches = list(chunked(unique_variants, args.batch_size))
     workers = max(1, min(args.workers, len(batches) or 1))
     print(f"Querying local gnomAD VCF in {len(batches)} batches with {workers} workers", flush=True)
+    debug_print(f"input TSV: {args.input_tsv}")
+    debug_print(f"gnomAD source: {args.gnomad_vcf or args.gnomad_vcf_dir}")
+    if args.gnomad_vcf:
+        debug_print(f"gnomAD VCF header preview: {preview_vcf_header(args.gnomad_vcf)}")
 
     annotations = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -345,7 +380,9 @@ def main():
         for future in as_completed(future_to_batch):
             batch_index, batch = future_to_batch[future]
             print(f"Finished gnomAD batch {batch_index}/{len(batches)}", flush=True)
-            annotations.update(future.result())
+            batch_annotations = future.result()
+            debug_print(f"batch {batch_index}/{len(batches)} returned {len(batch_annotations)} annotations")
+            annotations.update(batch_annotations)
 
     output_fields = fieldnames + ["gnomad_variant_id", "gnomad_af", "gnomad_nhomalt", "gnomad_lookup_status"]
 
