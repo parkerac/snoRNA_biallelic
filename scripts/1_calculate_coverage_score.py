@@ -33,6 +33,7 @@ def parse_gtf(path, feature_types):
     genes = []
     seen = set()
     wanted = {str(value).lower() for value in feature_types}
+    trna_mode = "trna" in wanted
     relaxed_mode = wanted & {"trna", "lncrna"}
     with open_text(path) as fh:
         for line in fh:
@@ -52,7 +53,7 @@ def parse_gtf(path, feature_types):
             gene_type = (attr_map.get("gene_type") or attr_map.get("gene_biotype") or "").strip()
             if not relaxed_mode and feature not in {"gene", "transcript"}:
                 continue
-            if not gene_type_matches(gene_type, wanted):
+            if not trna_mode and not gene_type_matches(gene_type, wanted):
                 continue
             gene = {
                 "gene_name": attr_map.get("gene_name", "UNKNOWN"),
