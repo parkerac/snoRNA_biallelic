@@ -16,6 +16,7 @@ Minimal workflow for finding individuals with multiple snoRNA variants in AGGV3 
 - `7_annotate_variants_with_gnomad.py` adds gnomAD `ac`, `an`, `af`, and `nhomalt` annotations to a variant TSV from a local indexed gnomAD VCF.
 - `8_annotate_single_variant_inheritance.py` labels a single candidate variant as `inherited`, `de_novo`, or `uncertain`.
 - `9_hpo_case_control_enrichment.py` tests case-control HPO enrichment after expanding annotations to all ancestors.
+- `10_prepare_trna_domain_bed.py` prepares BED-compatible tRNA domain intervals from GtRNAdb/tRNAscan-SE files.
 
 ## Suggested layout on CloudOS
 
@@ -85,19 +86,6 @@ python scripts/4_find_het_vars.py \
 
 This also writes `outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.tsv` unless you override `--all-het-out`.
 
-To annotate a variant TSV with gnomAD frequency and homozygote count, run:
-
-```bash
-python scripts/7_annotate_variants_with_gnomad.py \
-  --input-tsv outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.tsv \
-  --variant-column variant_id \
-  --gnomad-vcf-dir /path/to/gnomad_folder \
-  --out outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.gnomad.tsv \
-  --workers 8
-```
-
-This queries each unique variant only once, runs batches in parallel, and adds gnomAD `af` and `nhomalt` columns. If the input variant column contains semicolon-separated variants, the output gnomAD columns will use the same semicolon-separated structure. The default file name pattern under `--gnomad-vcf-dir` is `gnomad.joint.v4.1.sites.chr{chrom}.vcf.bgz`, where `{chrom}` is the chromosome without the `chr` prefix. Override this with `--gnomad-vcf-template` if your file names differ. You can also still pass a single `--gnomad-vcf` path if you prefer.
-
 To prepare those double-het rows for phasing with the local script, run:
 
 ```bash
@@ -115,6 +103,19 @@ python scripts/6_phase_nearby_variants.py \
   --pairs-tsv outputs/snorna_biallelic.double_het_for_phasing.tsv \
   --out outputs/snorna_biallelic.double_het_phasing_results.tsv
 ```
+
+To annotate a variant TSV with gnomAD frequency and homozygote count, run:
+
+```bash
+python scripts/7_annotate_variants_with_gnomad.py \
+  --input-tsv outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.tsv \
+  --variant-column variant_id \
+  --gnomad-vcf-dir /path/to/gnomad_folder \
+  --out outputs/snorna_biallelic.two_rare_same_snoRNA.all_het.gnomad.tsv \
+  --workers 8
+```
+
+This queries each unique variant only once, runs batches in parallel, and adds gnomAD `af` and `nhomalt` columns. If the input variant column contains semicolon-separated variants, the output gnomAD columns will use the same semicolon-separated structure. The default file name pattern under `--gnomad-vcf-dir` is `gnomad.joint.v4.1.sites.chr{chrom}.vcf.bgz`, where `{chrom}` is the chromosome without the `chr` prefix. Override this with `--gnomad-vcf-template` if your file names differ. You can also still pass a single `--gnomad-vcf` path if you prefer.
 
 To annotate a single candidate variant for inheritance, run:
 
@@ -135,6 +136,21 @@ python scripts/9_hpo_case_control_enrichment.py \
 ```
 
 The input TSV must contain `participant_id`, `case`, and `hpo_ids` columns. `hpo_ids` should be a comma-separated list of HPO IDs. The script expands each annotation to all ancestor terms with `hpo-toolkit`, skips shallow root-adjacent terms with `--min-depth` 2 by default, and only reports terms that are more common in cases than controls.
+
+To prepare tRNA domain intervals from a GtRNAdb `hg38-tRNAs` download, run:
+
+```bash
+bash scripts/local_scripts/10_run_prepare_trna_domain_bed.sh
+```
+
+This writes `hg38-tRNA-domains.bed` in the repo root with column names.
+By default it keeps only GtRNAdb high-confidence tRNAs; add `--include-all` to include secondary filtered and pseudo tRNAs too.
+The output columns are:
+`chrom`, `start`, `end`, `name`, `score`, `strand`, `trna_id`, `trnascan_id`, `amino_acid`, `anticodon`, `domain`, `mature_start`, `mature_end`, `pretrna_start`, `pretrna_end`, `trnascan_score`, `origin`, `note`.
+
+Domain nucleotide positions use the standard mature tRNA numbering convention described by Sprinzl and used by tRNA resources: acceptor stem positions `1-7` and `66-72`, D arm `10-25` with flanking positions included here as `8-26`, anticodon arm `27-43`, anticodon `34-36`, variable region starting at `44`, and T arm around `49-65`.
+GtRNAdb/tRNAscan-SE reports anticodon and intron bounds in tRNA-relative and genomic coordinates, which the script uses to project mature-domain intervals back onto hg38 BED coordinates and to split intervals around introns.
+References: GtRNAdb output/secondary-structure format (`https://gtrnadb.ucsc.edu/legend.html`), Sprinzl-style tRNA numbering as summarized in tRNADB-CE (`https://academic.oup.com/nar/article/26/1/148/2376733`), and Figure 1 of the following paper (`https://pmc.ncbi.nlm.nih.gov/articles/PMC11122139/`).
 
 If you run script 2 and your mounted directory structure differs from the default `shard-{shard}/subshard-{subshard}/postproc/vcf/dragen.vcf.gz` pattern, pass `--vcf-template` with the relative path layout that matches your session.
 
